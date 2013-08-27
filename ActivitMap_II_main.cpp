@@ -522,7 +522,7 @@ Perform a connected component labeling on the remap polar coordinate space.
 
 bw: Mat(500,181, CV_16UC1);
 */
-void detectCC(Mat& bw, list<Person>* people, list<Person>* peoplePolar, Mat& debugImg)
+void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
 {
 
 	Mat imgCpy = Mat(bw.size(), CV_8UC1);
@@ -549,21 +549,20 @@ void detectCC(Mat& bw, list<Person>* people, list<Person>* peoplePolar, Mat& deb
 		//if (b.size() > 10) //rejection of small regions
 		{
 			x = y = xx = yy = ww = 0;
-			range = alpha = rr = aa = 0;
 			for (int i = 0; i < b.size(); i++)
 			{
 				Point2i p = b[i];
 								
 				float rangeTmp = (bw.rows-p.y)*23.3; //binSize
-				float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
+				float thresh;
+				if (rangeTmp > 2300)
+					thresh= 67500*exp((-0.0005)*rangeTmp); //low threshold
+				else
+					thresh = 10000;
+				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
 				int w = bw.ptr<ushort>(p.y)[p.x];
 				if (w > thresh) //check that there is at least one pixel that get the higher threshold
 						pass = true;
-
-
-				Point2i pPolar = remap2Polar(&p);				
-				range += pPolar.y*w;
-				alpha += pPolar.x*w;
 
 				x += (p.x*w);
 				y += (p.y*w);
@@ -571,10 +570,9 @@ void detectCC(Mat& bw, list<Person>* people, list<Person>* peoplePolar, Mat& deb
 			}
 			if (pass)
 			{
-				Person p, pPolar;
+				Person p;
 				p.mean = Point(x/ww, y/ww);
-				pPolar.mean = Point(alpha/ww, range/ww);
-
+				
 				for (int i = 0; i < b.size(); i++)
 				{
 					Point2i point = b[i];
@@ -586,19 +584,12 @@ void detectCC(Mat& bw, list<Person>* people, list<Person>* peoplePolar, Mat& deb
 						debugImg.ptr<uchar>(point.y)[point.x*3+2] = 255;
 					}
 
-					Point2i pointPolar = remap2Polar(&point);
 					int w = bw.ptr<ushort>(point.y)[point.x];
 
-					aa += w*powf(pointPolar.x-pPolar.mean.x,2);
-					rr += w*powf(pointPolar.y-pPolar.mean.y,2);
-
+				
 					xx += w*powf(point.x-p.mean.x,2);
 					yy += w*powf(point.y-p.mean.y,2);
 				}
-
-				pPolar.sigmaY = sqrtf(rr/ww);
-				pPolar.sigmaX = sqrtf(aa/ww);
-				peoplePolar->push_back(pPolar);
 
 				p.sigmaY = sqrtf(yy/ww);
 				p.sigmaX = sqrtf(xx/ww);
@@ -730,7 +721,7 @@ void growRegions(Mat& img, const Mat* imgCpy2, const Mat* imgCpy1)
 img : Mat(500,181, CV_16UC1)
 
 */
-void ccDetection(Mat& img, list<Person>& people, list<Person>& peoplePolar)
+void ccDetection(Mat& img, list<Person>& people)
 {
 	Mat imgCpy1, imgCpy2;
 	img.copyTo(imgCpy1);
@@ -743,7 +734,7 @@ void ccDetection(Mat& img, list<Person>& people, list<Person>& peoplePolar)
 		{
 			int val = ptr[j];
 			float range = (img.rows-(i))*23.3; //binSize
-			float thresh = 60000*exp((-0.00065)*range); //low threshold
+			float thresh = 60000*exp((-0.0007)*range); //low threshold
 			if (val < thresh)
 				ptr[j] = 0;
 		}
@@ -785,7 +776,7 @@ void ccDetection(Mat& img, list<Person>& people, list<Person>& peoplePolar)
 
 
 	}
-	detectCC(img, &people, &peoplePolar, outDebug);
+	detectCC(img, &people, outDebug);
 	if (debug > DEBUG_MED)
 	{
 		imshow("Thresholds", outDebug);
@@ -974,7 +965,7 @@ int main(int argc, char* argv[])
 	DEPTH_STEP = actMapCreator.depthStep;
 	X_STEP = actMapCreator.xStep;
 
-	list<Person> people, peoplePolar;
+	list<Person> people;
 	while (!bShouldStop && frames < TotalFrames_2)
 	{
 		
@@ -1053,7 +1044,7 @@ int main(int argc, char* argv[])
 					//Size sSize = Size(sWidth, sHeight); //kernel size for convolution
 					
 					uniformConvolution(&polarAlt, polarAlt_smooth, kSize); //smooth the image
-					ccDetection(polarAlt_smooth, people, peoplePolar); //Connected component detection
+					ccDetection(polarAlt_smooth, people); //Connected component detection
 
 
 					convert16to8(&polarAlt_smooth, polarAlt_smooth_);
@@ -1089,11 +1080,11 @@ int main(int argc, char* argv[])
 					}
 
 					list<Person>::iterator iterLocs = people.begin();
-					list<Person>::iterator iterPolar = peoplePolar.begin();
+					//list<Person>::iterator iterPolar = peoplePolar.begin();
 					while(iterLocs != people.end())
 					{
 						Person p = *iterLocs;
-						Person pPolar = *iterPolar;
+						//Person pPolar = *iterPolar;
 						//p.height *= 2;
 						circle(polarAlt_smooth_, p.mean, 2, Scalar::all(0), -1);
 						ellipse(polarAlt_smooth_, p.mean, Size(p.sigmaX*2, p.sigmaY*2), 0,0,360, Scalar::all(0));
@@ -1106,13 +1097,35 @@ int main(int argc, char* argv[])
 						int y = actMapCreator.findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, actMapCreator.depthStep);
 						pMean.y = (YRes-1) - y; //flip around X axis.
 
+
+						float sigmaAlphaRad = p.sigmaX*CV_PI/180;
+						float sigmaRange = p.sigmaY;
+						float meanAlpha = p.mean.x*CV_PI/180; //rad
+						float meanRange = p.mean.y; //mm
 						
 
+						float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/actMapCreator.xStep;
+						float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/actMapCreator.xStep;						
+						float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/actMapCreator.depthStep;
+						float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/actMapCreator.depthStep;
+
+						float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
+						Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
+
+						float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
+						Mat covPolar = Mat(2,2, CV_32FC1, varValues);
+
+						Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+						int sigmaX_II = sqrtf(covCartessian.at<float>(0,0));
+						int sigmaY_II = sqrtf(covCartessian.at<float>(1,1));
+
+						//BEGIN Options from the Polar space
+
 						//Error propagation
-						float sigmaAlphaRad = pPolar.sigmaX*CV_PI/180;
-						float sigmaRange = pPolar.sigmaY;
-						float alpha = pPolar.mean.x*CV_PI/180; //rad
-						float range = pPolar.mean.y; //mm
+						//float sigmaAlphaRad = pPolar.sigmaX*CV_PI/180;
+						//float sigmaRange = pPolar.sigmaY;
+						//float alpha = pPolar.mean.x*CV_PI/180; //rad
+						//float range = pPolar.mean.y; //mm
 
 						//Covariance propagation (option 1: propagate the correlation and the variance)
 						/*	float varValues[4] = {powf(pPolar.sigmaY,2), 0,0, powf(sigmaAlphaRad,2)}; 
@@ -1125,53 +1138,24 @@ int main(int argc, char* argv[])
 						//end Option1
 
 						//Option2: independent variables
-						int sigmaX = sqrtf( powf(cosf(alpha)*sigmaRange/20,2) +  powf(range*sinf(alpha)*sigmaAlphaRad/20,2));
-						int sigmaY = sqrtf( powf(sinf(alpha)*sigmaRange/20,2) + powf(range*cosf(alpha)*sigmaAlphaRad/20,2));
+						//int sigmaX = sqrtf( powf(cosf(alpha)*sigmaRange/20,2) +  powf(range*sinf(alpha)*sigmaAlphaRad/20,2));
+						//int sigmaY = sqrtf( powf(sinf(alpha)*sigmaRange/20,2) + powf(range*cosf(alpha)*sigmaAlphaRad/20,2));
 						//end Option2
+
+						//END OPTIONS
 
 
 
 						circle(*activityMap, pMean, 2, Scalar(0,0,255));
 						
-						ellipse(*activityMap, pMean, Size(sigmaY*3, sigmaX*3), -p.mean.x, 0, 360, Scalar(0,0,255));
+						ellipse(*activityMap, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
 
 						iterLocs++;
-						iterPolar++;
+
 					}
 					people.clear();
-					peoplePolar.clear();
-
 
 				}
-
-				////BEGIN DEBUG
-				////recover in a file the raw data
-				//if (frames == 34 || frames == 35)
-				//{
-				//	ofstream outFrame;
-				//	if (frames == 34)
-				//	{
-				//		imwrite("d:/Frame34.jpg", polarAlt_smooth_);
-				//		outFrame.open("d:/Frame34.txt");
-				//	}
-				//	else
-				//	{
-				//		imwrite("d:/Frame35.jpg", polarAlt_smooth_);
-				//		outFrame.open("d:/Frame35.txt");
-				//	}
-				//	for (int i = 0; i < polarAlt_smooth.rows; i++)
-				//	{
-				//		ushort *ptr = polarAlt_smooth.ptr<ushort>(i);
-				//		for (int j = 0; j < polarAlt_smooth.cols; j++)
-				//		{
-				//			outFrame << (int)ptr[j] << " " ;
-				//		}
-				//		outFrame << endl;
-				//	}
-				//	outFrame.close();
-				//}
-
-				////END DEBUG
 	
 
 				if (deleteBG)
@@ -1355,41 +1339,6 @@ int main(int argc, char* argv[])
 		}
 		frames++;
 	}
-
-	////Calculation of the variance
-	//vector<vector<float>>::iterator iterPeople = peopleRange.begin();
-	//int nP = 1;
-	//while (iterPeople != peopleRange.end())
-	//{
-	//	vector<float> person = *iterPeople;
-
-	//	vector<float>::iterator iterPerson = person.begin();
-	//	float r = 0;
-	//	while (iterPerson != person.end())
-	//	{
-	//		float range = *iterPerson;
-	//		r += range;
-	//		iterPerson++;
-	//	}
-	//	float meanRange = r/person.size();
-	//	float rr = 0;
-	//	iterPerson = person.begin();
-	//	while (iterPerson != person.end())
-	//	{
-	//		float range = *iterPerson;
-	//		rr += powf(range-meanRange, 2);
-	//		iterPerson++;
-	//	}
-	//	float stdRange = sqrtf(rr/person.size());
-
-	//	cout << "Person " << nP << ". Mean: " << meanRange << ". Std: " << stdRange << endl;
-	//	outStd << meanRange << " " << stdRange << endl;
-
-	//	nP++;
-	//	iterPeople++;
-	//}
-
-
 	
 	for (int i = 0; i < NUM_SENSORS; i++)
 	{
