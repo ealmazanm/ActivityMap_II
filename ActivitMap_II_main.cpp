@@ -32,12 +32,17 @@ char* windPolarSmooth = "Polar Alt Smooth";
 int step = 0;
 RNG rng(12345);
 
-int debug = DEBUG_HIGH;
+int debug = DEBUG_NONE;
 
 //debug
 int DEPTH_STEP, X_STEP;
 int frames = 0;
 
+struct Feature
+{
+	Scalar color;
+	float height;
+};
 
 struct Person
 {
@@ -242,6 +247,43 @@ void updateActivityMap(Mat& activityMap, Mat& activityMap_back, const ActivityMa
 		}
 	}
 }
+
+
+/*
+activityMap(out): Updates the positions where the 3D points project.
+actimityMap_back(out): With the background
+featureSpace(out): Feature space of colour and height. Modelled over a plan view
+am(in): 
+p3D(in): List of foreground points for a particular kinect
+nP(in): Number of foreground points.
+points2D(in): List of 2D points of the image plane for a particular kinect
+rgbMap(in): Map of rgb colours for a particular kinect
+*/
+void updateActivityMap(Mat& activityMap, Mat& activityMap_back, vector<list<Feature>>& featureSpace, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap)
+{
+	for (int i = 0; i < nP; i++)
+	{
+		int xCoor = am->findCoordinate(p3D[i].X, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, am->xStep);
+		int yC = am->findCoordinate(p3D[i].Z, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, am->depthStep);
+		int yCoor = (YRes-1) - yC; //flip around X axis.
+
+		XnRGB24Pixel color = rgbMap[(int)points2D[i].Y*XN_VGA_X_RES+(int)points2D[i].X];
+
+		uchar* ptr = activityMap.ptr<uchar>(yCoor);
+		uchar* ptr_back = activityMap_back.ptr<uchar>(yCoor);
+		
+		Feature f;
+		f.height = (float)p3D[i].Y;
+		f.color = Scalar(color.nRed, color.nGreen, color.nBlue);
+		featureSpace[yCoor*xCoor].push_back(f);
+
+		ptr[3*xCoor] = ptr_back[3*xCoor] = 0;
+		ptr[3*xCoor+1] = ptr_back[3*xCoor+1] = 0;
+		ptr[3*xCoor+2] = ptr_back[3*xCoor+2] = 0;
+	}
+}
+
+
 
 void createDepthMatrix(const XnDepthPixel* dMap, Mat& depthMat)
 {
@@ -734,6 +776,14 @@ void ccDetection(Mat& img, list<Person>& people)
 		{
 			int val = ptr[j];
 			float range = (img.rows-(i))*23.3; //binSize
+			
+			//linearize version of the threshold
+			//float thresh;
+			//if (range < 4500)
+			//	thresh = -5.6*range+32219;
+			//else
+			//	thresh = -0.73*range+769;
+
 			float thresh = 60000*exp((-0.0007)*range); //low threshold
 			if (val < thresh)
 				ptr[j] = 0;
@@ -883,6 +933,8 @@ int main(int argc, char* argv[])
 	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
 	//int height = sqrtf(powf(actMapCreator.getResolution().width/2,2.0) + powf(actMapCreator.getResolution().height,2.0));
 	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
+	vector<list<Feature>> featureSpace(actMapCreator.getResolution().width*actMapCreator.getResolution().height);
+
 	//flags
 	bool bShouldStop = false;
 	bool trans = true;
@@ -949,7 +1001,7 @@ int main(int argc, char* argv[])
 
 
 	
-	namedWindow(windPolarName);
+	//namedWindow(windPolarName);
 	cvSetMouseCallback(windPolarName, selectROI_callBack, (Mat*)&polar_);
 	cvSetMouseCallback(windPolarName, selectPoint_callBack, (Mat*)&polar_);
 	int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
@@ -966,20 +1018,25 @@ int main(int argc, char* argv[])
 	X_STEP = actMapCreator.xStep;
 
 	list<Person> people;
+	clock_t startTime = clock();
 	while (!bShouldStop && frames < TotalFrames_2)
-	{
-		
+	{		
+		if (frames%10 == 0)
+		{
+			clock_t endTime = clock();
+			cout << "Frame " << frames << ": " << 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10)) << " fps" << endl;
+			startTime = clock();
+		}
+
 		Utils::initMat1s(polarAlt, 0);
 		Utils::initMat1s(polar, 0);
 
-		cout << "Frame: " << frames << endl;
 		for (int i = 0; i < NUM_SENSORS; i++)
 			kinects[i].waitAndUpdate();
 		
 		list<Point> locations;
 		for (int i = 0; i < NUM_SENSORS;  i++)
 		{
-//			kinects[i].turnUpsideDown(depthMaps_ud[i], rgbMaps_ud[i]);
 			depthMaps[i] = kinects[i].getDepthMap();
 			rgbMaps[i] = kinects[i].getRGBMap();
 			//new part
@@ -994,130 +1051,117 @@ int main(int argc, char* argv[])
 			masks[i] = grey > 250; //mask that identifies the noise (1)
 		}
 
-	//	if (frames > 330)
-	//	{
-			int nPoints  = 0;
-			if (bgComplete && trans) //Trans must be true
+		int nPoints  = 0;
+		if (bgComplete && trans) //Trans must be true
+		{
+			cont++;
+			if (first)
 			{
-				cont++;
-				if (first)
+				whiteBack = Mat::Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				Utils::initMat3u(whiteBack, 255);
+				first = false;
+			}
+			whiteBack.copyTo(*activityMap);
+			background.copyTo(*activityMap_Back);
+
+			for (int i = 0; i < NUM_SENSORS; i++)
+			{
+				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
+				nPoints += numberOfForegroundPoints[i];
+
+				if (debug > DEBUG_NONE)//Draw the output of the foreground detection
 				{
-					whiteBack = Mat::Mat(actMapCreator.getResolution(), CV_8UC3);
-					activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
-					activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
-					Utils::initMat3u(whiteBack, 255);
-					first = false;
-				}
-				whiteBack.copyTo(*activityMap);
-				background.copyTo(*activityMap_Back);
-
-				for (int i = 0; i < NUM_SENSORS; i++)
-				{
-					numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
-					nPoints += numberOfForegroundPoints[i];
-
-					
-						for (int c = 0; c < numberOfForegroundPoints[i]; c++)
-						{
-							XnPoint3D* p = &(pointsFore2D[i][c]); 
-							uchar* ptr = rgbImages[i].ptr<uchar>(p->Y);
-							ptr[3*(int)p->X] = 0;
-							ptr[(3*(int)p->X)+1] = 0;
-							ptr[(3*(int)p->X)+2] = 255;
-							//cout << c << " ";
-						}
-					
-
-				}
-				for (int i = 0; i < NUM_SENSORS; i++)
-				{
-					points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
-					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
-
-					//Create alternative representation
-					updatePolarAlternateive(&polarAlt, &polar, points3D[i], numberOfForegroundPoints[i]);				
-					updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
-				}
-				if (nPoints > 0)
-				{
-					//Convolve the image with a gaussian kerel
-					//Size sSize = Size(sWidth, sHeight); //kernel size for convolution
-					
-					uniformConvolution(&polarAlt, polarAlt_smooth, kSize); //smooth the image
-					ccDetection(polarAlt_smooth, people); //Connected component detection
-
-
-					convert16to8(&polarAlt_smooth, polarAlt_smooth_);
-					convert16to8(&polarAlt, polarAlt_);
-					convert16to8(&polar, polar_);
-
-					if (debug > DEBUG_LOW)
+					for (int c = 0; c < numberOfForegroundPoints[i]; c++)
 					{
-						Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
-						for (int i = 0; i < polarAlt_smooth_.rows; i++)
-						{
-							uchar* ptrDebug = imgDebug.ptr<uchar>(i);
-							uchar* ptrPolarAlt = polarAlt_.ptr<uchar>(i);
-							uchar* p = polarAlt_smooth_.ptr<uchar>(i);
-							for (int j = 0; j < polarAlt_smooth_.cols; j++)
-							{
-								if (ptrPolarAlt[j] < 255 && p[j] < 255)
-								{
-									ptrDebug[j*3] = 0; ptrDebug[j*3+1] = 255; ptrDebug[j*3+2] = 0;
-								}
-								else if (ptrPolarAlt[j] < 255)
-								{
-									ptrDebug[j*3] = 255; ptrDebug[j*3+1] = 0; ptrDebug[j*3+2] = 0;
-								}
-								else if (p[j] < 255)
-								{
-									ptrDebug[j*3] = 0; ptrDebug[j*3+1] = 0; ptrDebug[j*3+2] = 255;
-								}
+						XnPoint3D* p = &(pointsFore2D[i][c]); 
+						uchar* ptr = rgbImages[i].ptr<uchar>(p->Y);
+						ptr[3*(int)p->X] = 0;
+						ptr[(3*(int)p->X)+1] = 0;
+						ptr[(3*(int)p->X)+2] = 255;
+					}
+				}
+			}
+			for (int i = 0; i < NUM_SENSORS; i++)
+			{
+				points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
+				kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
+				//Create alternative representation
+				updatePolarAlternateive(&polarAlt, &polar, points3D[i], numberOfForegroundPoints[i]);				
+				//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
+				updateActivityMap(*activityMap, *activityMap_Back, featureSpace, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
+			}
+			if (nPoints > 0)
+			{
+				uniformConvolution(&polarAlt, polarAlt_smooth, kSize); //smooth the image
+				ccDetection(polarAlt_smooth, people); //Connected component detection
+				//For display purposes
+				convert16to8(&polarAlt_smooth, polarAlt_smooth_);
+				convert16to8(&polarAlt, polarAlt_);
+				convert16to8(&polar, polar_);
 
+				if (debug > DEBUG_LOW)//Show the comparison between the smoothed and the original remap polar space
+				{
+					Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
+					for (int i = 0; i < polarAlt_smooth_.rows; i++)
+					{
+						uchar* ptrDebug = imgDebug.ptr<uchar>(i);
+						uchar* ptrPolarAlt = polarAlt_.ptr<uchar>(i);
+						uchar* p = polarAlt_smooth_.ptr<uchar>(i);
+						for (int j = 0; j < polarAlt_smooth_.cols; j++)
+						{
+							if (ptrPolarAlt[j] < 255 && p[j] < 255)
+							{
+								ptrDebug[j*3] = 0; ptrDebug[j*3+1] = 255; ptrDebug[j*3+2] = 0;
+							}
+							else if (ptrPolarAlt[j] < 255)
+							{
+								ptrDebug[j*3] = 255; ptrDebug[j*3+1] = 0; ptrDebug[j*3+2] = 0;
+							}
+							else if (p[j] < 255)
+							{
+								ptrDebug[j*3] = 0; ptrDebug[j*3+1] = 0; ptrDebug[j*3+2] = 255;
 							}
 						}
-						imshow("comparison", imgDebug);
 					}
+					imshow("Smooth comparison", imgDebug);
+				}
 
-					list<Person>::iterator iterLocs = people.begin();
-					//list<Person>::iterator iterPolar = peoplePolar.begin();
-					while(iterLocs != people.end())
-					{
-						Person p = *iterLocs;
-						//Person pPolar = *iterPolar;
-						//p.height *= 2;
-						circle(polarAlt_smooth_, p.mean, 2, Scalar::all(0), -1);
-						ellipse(polarAlt_smooth_, p.mean, Size(p.sigmaX*2, p.sigmaY*2), 0,0,360, Scalar::all(0));
+				list<Person>::iterator iterLocs = people.begin();
+				while(iterLocs != people.end())
+				{
+					Person p = *iterLocs;
+					circle(polarAlt_smooth_, p.mean, 2, Scalar::all(0), -1);
+					ellipse(polarAlt_smooth_, p.mean, Size(p.sigmaX*2, p.sigmaY*2), 0,0,360, Scalar::all(0));
 
-						//Mean of the distribution
-						Point cMoA, pMean;
-						cMoA = convertBack(&p.mean);
+					//Mean projection to MoA
+					Point cMoA, pMean;
+					cMoA = convertBack(&p.mean);
+					pMean.x = actMapCreator.findCoordinate(cMoA.x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, actMapCreator.xStep);
+					int y = actMapCreator.findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, actMapCreator.depthStep);
+					pMean.y = (YRes-1) - y; //flip around X axis.
 
-						pMean.x = actMapCreator.findCoordinate(cMoA.x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, actMapCreator.xStep);
-						int y = actMapCreator.findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, actMapCreator.depthStep);
-						pMean.y = (YRes-1) - y; //flip around X axis.
-
-
-						float sigmaAlphaRad = p.sigmaX*CV_PI/180;
-						float sigmaRange = p.sigmaY;
-						float meanAlpha = p.mean.x*CV_PI/180; //rad
-						float meanRange = p.mean.y; //mm
+					//Covariance projection to MoA
+					float sigmaAlphaRad = p.sigmaX*CV_PI/180;
+					float sigmaRange = p.sigmaY;
+					float meanAlpha = p.mean.x*CV_PI/180; //rad
+					float meanRange = p.mean.y; //mm
 						
-
-						float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/actMapCreator.xStep;
-						float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/actMapCreator.xStep;						
-						float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/actMapCreator.depthStep;
-						float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/actMapCreator.depthStep;
-
-						float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
-						Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
-
-						float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
-						Mat covPolar = Mat(2,2, CV_32FC1, varValues);
-
-						Mat covCartessian = jacobMat * covPolar * jacobMat.t();
-						int sigmaX_II = sqrtf(covCartessian.at<float>(0,0));
-						int sigmaY_II = sqrtf(covCartessian.at<float>(1,1));
+					//Jacobian matrix of partial derivatives
+					float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/actMapCreator.xStep;
+					float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/actMapCreator.xStep;						
+					float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/actMapCreator.depthStep;
+					float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/actMapCreator.depthStep;
+					float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
+					Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
+					//covariance matrix in the plan view remap polar space(RPS)
+					float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
+					Mat covPolar = Mat(2,2, CV_32FC1, varValues);
+					//Covariance approximation in the plan view MoA
+					Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+					int sigmaX_II = sqrtf(covCartessian.at<float>(0,0));
+					int sigmaY_II = sqrtf(covCartessian.at<float>(1,1));
 
 						//BEGIN Options from the Polar space
 
@@ -1145,78 +1189,46 @@ int main(int argc, char* argv[])
 						//END OPTIONS
 
 
-
-						circle(*activityMap, pMean, 2, Scalar(0,0,255));
-						
-						ellipse(*activityMap, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
-
-						iterLocs++;
-
-					}
-					people.clear();
-
+					circle(*activityMap, pMean, 2, Scalar(0,0,255));
+					ellipse(*activityMap, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
+					iterLocs++;
 				}
+				people.clear();
+			}
+			if (deleteBG)
+				imshow(windMoA, *activityMap);
+			else
+				imshow(windMoA, *activityMap_Back);
 	
 
-				if (deleteBG)
-					imshow(windMoA, *activityMap);
-				else
-					imshow(windMoA, *activityMap_Back);
-			
-					for (int i = 0; i < polarAlt_smooth_.rows; i++)
-					{
-						uchar* p = polarAlt_smooth_.ptr<uchar>(i);
-						uchar* s = m.ptr<uchar>(i);
-						for (int j = 0; j < polarAlt_smooth_.cols; j++)
-						{
-							s[3*j] = p[j];
-							s[3*j+1] = p[j];
-							s[3*j+2] = p[j];
-						}
-					}
+			if (debug > DEBUG_MED)
+				addGrid(polarAlt_smooth_, kSize);
 
-
-
-					if (debug > DEBUG_LOW)
-						addGrid(polarAlt_smooth_, kSize);
-					
-					cvSetMouseCallback(windMoA, selectPoint_callBack, (Mat*)activityMap);
-					Mat** images = new Mat*[2];
-					images[0] = &m;
-					images[1] = activityMap;
-					cvSetMouseCallback(windPolarSmooth, selectPoint2_callBack, images);
-
-					imshow(windPolarSmooth, m);
-					
-					if (recordOut == 1)
-					{
-						w << m;
-						w1 << *activityMap;
-						//w <<  depthImages[1];
-					}
-			}
-			else
+			if (recordOut == 1)
 			{
-			
-				actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames);
-
-				if (recordOut == 1 && trans)
-						w << background;
-				imshow("Activity Map", background);
+				w << m;
+				w1 << *activityMap;
 			}
+		}
+		else
+		{
+			
+			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames);
 
-		
-
-		imshow(windPolarName, polar_);
-		//imshow("Polar Alt Smooth", polarAlt_smooth_);
-		imshow("Polar Alt", polarAlt_);
-		imshow("rgb0", rgbImages[0]);
-		imshow("rgb1", rgbImages[1]);
-		imshow("rgb2", rgbImages[2]);
+			if (recordOut == 1 && trans)
+					w << background;
+			imshow("Activity Map", background);
+		}
+		if (debug > DEBUG_NONE)
+		{
+			imshow(windPolarName, polar_);
+			imshow("Polar Alt Smooth", polarAlt_smooth_);
+			imshow("Polar Alt", polarAlt_);
+			imshow("rgb0", rgbImages[0]);
+			imshow("rgb1", rgbImages[1]);
+			imshow("rgb2", rgbImages[2]);
+		}
 		int c = waitKey(waitTime);
-		//if (frames == 284)
-		//	c = 13;
-
 		switch (c)
 		{
 		case 119: //(w) increment width of the kernel
@@ -1302,22 +1314,8 @@ int main(int argc, char* argv[])
 				else
 				{
 					//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
-					//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/RemapPolarSpace_Detection_Good.jpg", polarAlt_smooth_);
-					//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/RemapSpace.jpg", polarAlt_);
-					//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/Detection_MoA.jpg", *activityMap);
-					
-					/*imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/depth1.jpg", depthImages[0]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/depth2.jpg", depthImages[1]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/depth3.jpg", depthImages[2]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/rgb1.jpg", rgbImages[0]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/rgb2.jpg", rgbImages[1]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/rgb3.jpg", rgbImages[2]);
-					imwrite("c:/Dropbox/Phd/AnnualMonitoringReport/images/MoA.jpg", *activityMap);*/
-					
 					waitTime=0;
 				}
-			//	deleteBG = !deleteBG;
-			//	printPoints = true;
 				break;
 			}
 		case 2490368:
