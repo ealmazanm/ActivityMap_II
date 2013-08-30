@@ -19,11 +19,18 @@ static const int DEBUG_NONE = -1;
 static const int DEBUG_LOW = 0;
 static const int DEBUG_MED = 1;
 static const int DEBUG_HIGH = 2;
+static const int DEBUG_OUT = -2;
 
 const int NUM_SENSORS = 3;
 
 ifstream tiltTXT("D:\\CameraCalibrations\\extrinsics\\tilt.txt");
 ofstream outStd("d:/Emilio/Kinect/DepthSensorStudy/PeopleVariance.txt");
+
+//For debugin
+ofstream outDebugFile("d:/Debug.txt");
+ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_numPoints_line.txt");
+int debugFrame = -1;
+
 vector<vector<float>> peopleRange;
 Rect area (-1, -1, -1, -1);
 char* windPolarName = "Polar";
@@ -43,6 +50,8 @@ struct Feature
 	Scalar color;
 	float height;
 };
+typedef multimap <int, Feature, less<int>> mmFS;
+
 
 struct Person
 {
@@ -259,7 +268,7 @@ nP(in): Number of foreground points.
 points2D(in): List of 2D points of the image plane for a particular kinect
 rgbMap(in): Map of rgb colours for a particular kinect
 */
-void updateActivityMap(Mat& activityMap, Mat& activityMap_back, vector<list<Feature>>& featureSpace, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap)
+void updateActivityMap(Mat& activityMap, Mat& activityMap_back, mmFS& fs, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap)
 {
 	for (int i = 0; i < nP; i++)
 	{
@@ -275,12 +284,19 @@ void updateActivityMap(Mat& activityMap, Mat& activityMap_back, vector<list<Feat
 		Feature f;
 		f.height = (float)p3D[i].Y;
 		f.color = Scalar(color.nRed, color.nGreen, color.nBlue);
-		featureSpace[yCoor*xCoor].push_back(f);
+		fs.insert(mmFS::value_type(xCoor*yCoor, f));
+		if (debug == DEBUG_OUT && frames == debugFrame)
+		{
+			outDebugFile << i << ": " << xCoor << ", " << yCoor << ", " << f.height << "; Key: " << yCoor*xCoor << endl;
+		}
+
 
 		ptr[3*xCoor] = ptr_back[3*xCoor] = 0;
 		ptr[3*xCoor+1] = ptr_back[3*xCoor+1] = 0;
 		ptr[3*xCoor+2] = ptr_back[3*xCoor+2] = 0;
 	}
+	if (debug == DEBUG_OUT)
+		outDebugFile << "Frame: " << frames  << ". NumPoints: " << nP << ". Features Space size: " << fs.size() << endl;
 }
 
 
@@ -933,7 +949,10 @@ int main(int argc, char* argv[])
 	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
 	//int height = sqrtf(powf(actMapCreator.getResolution().width/2,2.0) + powf(actMapCreator.getResolution().height,2.0));
 	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
-	vector<list<Feature>> featureSpace(actMapCreator.getResolution().width*actMapCreator.getResolution().height);
+
+	//initialize Feature space
+	mmFS fs;
+
 
 	//flags
 	bool bShouldStop = false;
@@ -972,7 +991,8 @@ int main(int argc, char* argv[])
 
 //	bool printPoints = false;
 	int TotalFrames_4 = 1670;
-	int TotalFrames_2 = 1790;
+	//int TotalFrames_2 = 1790;
+	int TotalFrames_2 = 900;
 
 	Mat polar = Mat(500,181, CV_16UC1);
 	Mat polarAlt= Mat(500,181, CV_16UC1);
@@ -1019,12 +1039,18 @@ int main(int argc, char* argv[])
 
 	list<Person> people;
 	clock_t startTime = clock();
+	int nPoints = 0;
 	while (!bShouldStop && frames < TotalFrames_2)
 	{		
-		if (frames%10 == 0)
+
+		if (debug != DEBUG_NONE && frames%10 == 0)
 		{
 			clock_t endTime = clock();
-			cout << "Frame " << frames << ": " << 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10)) << " fps" << endl;
+			double fps = 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10));
+			if (debug == DEBUG_OUT)
+				fpsOut << frames << " " << fps << " " << nPoints << endl;
+			else
+				cout << "Frame " << frames << ": " << fps << " fps. (" << nPoints << ")" << endl;
 			startTime = clock();
 		}
 
@@ -1051,7 +1077,7 @@ int main(int argc, char* argv[])
 			masks[i] = grey > 250; //mask that identifies the noise (1)
 		}
 
-		int nPoints  = 0;
+		nPoints = 0;
 		if (bgComplete && trans) //Trans must be true
 		{
 			cont++;
@@ -1090,7 +1116,10 @@ int main(int argc, char* argv[])
 				//Create alternative representation
 				updatePolarAlternateive(&polarAlt, &polar, points3D[i], numberOfForegroundPoints[i]);				
 				//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
-				updateActivityMap(*activityMap, *activityMap_Back, featureSpace, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
+				if (!fs.empty())
+					fs.clear();
+				
+				updateActivityMap(*activityMap, *activityMap_Back, fs, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
 			}
 			if (nPoints > 0)
 			{
@@ -1335,6 +1364,7 @@ int main(int argc, char* argv[])
 				break;
 			}
 		}
+		
 		frames++;
 	}
 	
