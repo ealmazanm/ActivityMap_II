@@ -28,7 +28,7 @@ ofstream outStd("d:/Emilio/Kinect/DepthSensorStudy/PeopleVariance.txt");
 
 //For debugin
 ofstream outDebugFile("d:/Debug.txt");
-ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_numPoints_line.txt");
+ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_BGUpdt.txt");
 int debugFrame = -1;
 
 vector<vector<float>> peopleRange;
@@ -39,7 +39,7 @@ char* windPolarSmooth = "Polar Alt Smooth";
 int step = 0;
 RNG rng(12345);
 
-int debug = DEBUG_NONE;
+int debug = DEBUG_HIGH;
 
 //debug
 int DEPTH_STEP, X_STEP;
@@ -168,8 +168,7 @@ void selectPoint2_callBack(int event, int x, int y, int flags, void* param)
 	{
 		circle(*polarSmooth, Point(x,y), 2, Scalar::all(225));
 		
-		imshow(windPolarSmooth, *polarSmooth);
-		waitKey(0);
+		//imshow(windPolarSmooth, *polarSmooth);
 
 		//Calculate range
 		float rangeAlt_back = (500 - y)*step;
@@ -845,12 +844,7 @@ void ccDetection(Mat& img, list<Person>& people)
 	detectCC(img, &people, outDebug);
 	if (debug > DEBUG_MED)
 	{
-		imshow("Thresholds", outDebug);
-			//print out at frame 35
-		if (frames == 35)
-		{
-			imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/Frame35_lowThreshold.jpg", outDebug);
-		}
+		imshow("Thresholds", outDebug);	
 	}
 }
 
@@ -891,6 +885,75 @@ void nms(const Mat* img, Size sz, list<Point>& locations)
 			}
 		}
 	}
+}
+
+void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
+{
+	list<Person>::iterator iterLocs = people.begin();
+	while(iterLocs != people.end())
+	{
+		Person p = *iterLocs;
+		circle(remapPolar, p.mean, 2, Scalar::all(0), -1);
+		ellipse(remapPolar, p.mean, Size(p.sigmaX*2, p.sigmaY*2), 0,0,360, Scalar::all(0));
+
+		//Mean projection to MoA
+		Point cMoA, pMean;
+		cMoA = convertBack(&p.mean);
+		pMean.x = ActivityMap_Utils::findCoordinate(cMoA.x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, X_STEP);
+		int y = ActivityMap_Utils::findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, DEPTH_STEP);
+		pMean.y = (YRes-1) - y; //flip around X axis.
+
+		//Covariance projection to MoA
+		float sigmaAlphaRad = p.sigmaX*CV_PI/180;
+		float sigmaRange = p.sigmaY;
+		float meanAlpha = p.mean.x*CV_PI/180; //rad
+		float meanRange = p.mean.y; //mm
+						
+		//Jacobian matrix of partial derivatives
+		float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/X_STEP;
+		float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/X_STEP;						
+		float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/DEPTH_STEP;
+		float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/DEPTH_STEP;
+		float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
+		Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
+		//covariance matrix in the plan view remap polar space(RPS)
+		float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
+		Mat covPolar = Mat(2,2, CV_32FC1, varValues);
+		//Covariance approximation in the plan view MoA
+		Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+		int sigmaX_II = sqrtf(covCartessian.at<float>(0,0));
+		int sigmaY_II = sqrtf(covCartessian.at<float>(1,1));
+
+			//BEGIN Options from the Polar space
+
+			//Error propagation
+			//float sigmaAlphaRad = pPolar.sigmaX*CV_PI/180;
+			//float sigmaRange = pPolar.sigmaY;
+			//float alpha = pPolar.mean.x*CV_PI/180; //rad
+			//float range = pPolar.mean.y; //mm
+
+			//Covariance propagation (option 1: propagate the correlation and the variance)
+			/*	float varValues[4] = {powf(pPolar.sigmaY,2), 0,0, powf(sigmaAlphaRad,2)}; 
+				Mat covPolar = Mat(2,2, CV_32FC1, varValues);
+				float jacobValues[4] = {cosf(alpha)/actMapCreator.xStep, (-range*sinf(alpha))/actMapCreator.xStep, sinf(alpha)/actMapCreator.depthStep, (range*cosf(alpha))/actMapCreator.depthStep}; 
+				Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
+				Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+				int sigmaX = sqrtf(covCartessian.at<float>(0,0));
+				int sigmaY = sqrtf(covCartessian.at<float>(1,1));*/
+			//end Option1
+
+			//Option2: independent variables
+			//int sigmaX = sqrtf( powf(cosf(alpha)*sigmaRange/20,2) +  powf(range*sinf(alpha)*sigmaAlphaRad/20,2));
+			//int sigmaY = sqrtf( powf(sinf(alpha)*sigmaRange/20,2) + powf(range*cosf(alpha)*sigmaAlphaRad/20,2));
+			//end Option2
+
+			//END OPTIONS
+
+		circle(moa, pMean, 2, Scalar(0,0,255));
+		ellipse(moa, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
+		iterLocs++;
+	}
+	people.clear();
 }
 
 
@@ -1021,7 +1084,7 @@ int main(int argc, char* argv[])
 
 
 	
-	//namedWindow(windPolarName);
+	namedWindow(windPolarName);
 	cvSetMouseCallback(windPolarName, selectROI_callBack, (Mat*)&polar_);
 	cvSetMouseCallback(windPolarName, selectPoint_callBack, (Mat*)&polar_);
 	int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
@@ -1049,8 +1112,8 @@ int main(int argc, char* argv[])
 			double fps = 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10));
 			if (debug == DEBUG_OUT)
 				fpsOut << frames << " " << fps << " " << nPoints << endl;
-			else
-				cout << "Frame " << frames << ": " << fps << " fps. (" << nPoints << ")" << endl;
+			
+			cout << "Frame " << frames << ": " << fps << " fps. (" << nPoints << ")" << endl;
 			startTime = clock();
 		}
 
@@ -1115,7 +1178,6 @@ int main(int argc, char* argv[])
 				kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
 				//Create alternative representation
 				updatePolarAlternateive(&polarAlt, &polar, points3D[i], numberOfForegroundPoints[i]);				
-				//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
 				if (!fs.empty())
 					fs.clear();
 				
@@ -1123,12 +1185,18 @@ int main(int argc, char* argv[])
 			}
 			if (nPoints > 0)
 			{
+				//Todo: Create a method detection(polarAlt, moAPeople)
 				uniformConvolution(&polarAlt, polarAlt_smooth, kSize); //smooth the image
 				ccDetection(polarAlt_smooth, people); //Connected component detection
+				//polarAlt_smooth contains the actual number of points projected
+				//so if I select a roi i could retrieve all the information
+				//if i could retrieve the mean and the variance will be very useful
+				
 				//For display purposes
 				convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 				convert16to8(&polarAlt, polarAlt_);
 				convert16to8(&polar, polar_);
+				displayDetections(people, polarAlt_smooth_, *activityMap);
 
 				if (debug > DEBUG_LOW)//Show the comparison between the smoothed and the original remap polar space
 				{
@@ -1154,84 +1222,25 @@ int main(int argc, char* argv[])
 							}
 						}
 					}
+					addGrid(polarAlt_smooth_, kSize);
+					//Utils::hardMatCopy(&imgDebug, m);
+					cvSetMouseCallback(windMoA, selectPoint_callBack, (Mat*)activityMap);
+					Mat** images = new Mat*[2];
+					images[0] = &imgDebug;
+					images[1] = activityMap;
+					cvSetMouseCallback("Smooth comparison", selectPoint2_callBack, images);
+					//imshow(windPolarSmooth, m);
 					imshow("Smooth comparison", imgDebug);
 				}
 
-				list<Person>::iterator iterLocs = people.begin();
-				while(iterLocs != people.end())
-				{
-					Person p = *iterLocs;
-					circle(polarAlt_smooth_, p.mean, 2, Scalar::all(0), -1);
-					ellipse(polarAlt_smooth_, p.mean, Size(p.sigmaX*2, p.sigmaY*2), 0,0,360, Scalar::all(0));
+				
 
-					//Mean projection to MoA
-					Point cMoA, pMean;
-					cMoA = convertBack(&p.mean);
-					pMean.x = actMapCreator.findCoordinate(cMoA.x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, actMapCreator.xStep);
-					int y = actMapCreator.findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, actMapCreator.depthStep);
-					pMean.y = (YRes-1) - y; //flip around X axis.
-
-					//Covariance projection to MoA
-					float sigmaAlphaRad = p.sigmaX*CV_PI/180;
-					float sigmaRange = p.sigmaY;
-					float meanAlpha = p.mean.x*CV_PI/180; //rad
-					float meanRange = p.mean.y; //mm
-						
-					//Jacobian matrix of partial derivatives
-					float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/actMapCreator.xStep;
-					float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/actMapCreator.xStep;						
-					float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/actMapCreator.depthStep;
-					float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/actMapCreator.depthStep;
-					float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
-					Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
-					//covariance matrix in the plan view remap polar space(RPS)
-					float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
-					Mat covPolar = Mat(2,2, CV_32FC1, varValues);
-					//Covariance approximation in the plan view MoA
-					Mat covCartessian = jacobMat * covPolar * jacobMat.t();
-					int sigmaX_II = sqrtf(covCartessian.at<float>(0,0));
-					int sigmaY_II = sqrtf(covCartessian.at<float>(1,1));
-
-						//BEGIN Options from the Polar space
-
-						//Error propagation
-						//float sigmaAlphaRad = pPolar.sigmaX*CV_PI/180;
-						//float sigmaRange = pPolar.sigmaY;
-						//float alpha = pPolar.mean.x*CV_PI/180; //rad
-						//float range = pPolar.mean.y; //mm
-
-						//Covariance propagation (option 1: propagate the correlation and the variance)
-						/*	float varValues[4] = {powf(pPolar.sigmaY,2), 0,0, powf(sigmaAlphaRad,2)}; 
-							Mat covPolar = Mat(2,2, CV_32FC1, varValues);
-							float jacobValues[4] = {cosf(alpha)/actMapCreator.xStep, (-range*sinf(alpha))/actMapCreator.xStep, sinf(alpha)/actMapCreator.depthStep, (range*cosf(alpha))/actMapCreator.depthStep}; 
-							Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
-							Mat covCartessian = jacobMat * covPolar * jacobMat.t();
-							int sigmaX = sqrtf(covCartessian.at<float>(0,0));
-							int sigmaY = sqrtf(covCartessian.at<float>(1,1));*/
-						//end Option1
-
-						//Option2: independent variables
-						//int sigmaX = sqrtf( powf(cosf(alpha)*sigmaRange/20,2) +  powf(range*sinf(alpha)*sigmaAlphaRad/20,2));
-						//int sigmaY = sqrtf( powf(sinf(alpha)*sigmaRange/20,2) + powf(range*cosf(alpha)*sigmaAlphaRad/20,2));
-						//end Option2
-
-						//END OPTIONS
-
-
-					circle(*activityMap, pMean, 2, Scalar(0,0,255));
-					ellipse(*activityMap, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
-					iterLocs++;
-				}
-				people.clear();
 			}
 			if (deleteBG)
 				imshow(windMoA, *activityMap);
 			else
 				imshow(windMoA, *activityMap_Back);
-	
 
-			if (debug > DEBUG_MED)
-				addGrid(polarAlt_smooth_, kSize);
 
 			if (recordOut == 1)
 			{
@@ -1251,7 +1260,7 @@ int main(int argc, char* argv[])
 		if (debug > DEBUG_NONE)
 		{
 			imshow(windPolarName, polar_);
-			imshow("Polar Alt Smooth", polarAlt_smooth_);
+			imshow("Polar Alt Smooth_", polarAlt_smooth_);
 			imshow("Polar Alt", polarAlt_);
 			imshow("rgb0", rgbImages[0]);
 			imshow("rgb1", rgbImages[1]);
