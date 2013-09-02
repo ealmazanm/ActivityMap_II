@@ -29,7 +29,8 @@ ofstream outStd("d:/Emilio/Kinect/DepthSensorStudy/PeopleVariance.txt");
 //For debugin
 ofstream outDebugFile("d:/Debug.txt");
 ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_BGUpdt.txt");
-int debugFrame = -1;
+ofstream outPerson("c:\\Dropbox\\PhD\\Matlab\\PdF_person\\pdf_points.txt");
+int debugFrame = 47;
 
 vector<vector<float>> peopleRange;
 Rect area (-1, -1, -1, -1);
@@ -283,7 +284,8 @@ void updateActivityMap(Mat& activityMap, Mat& activityMap_back, mmFS& fs, const 
 		Feature f;
 		f.height = (float)p3D[i].Y;
 		f.color = Scalar(color.nRed, color.nGreen, color.nBlue);
-		fs.insert(mmFS::value_type(xCoor*yCoor, f));
+		int key = yCoor * am->getResolution().width + xCoor;
+		fs.insert(mmFS::value_type(key, f));
 		if (debug == DEBUG_OUT && frames == debugFrame)
 		{
 			outDebugFile << i << ": " << xCoor << ", " << yCoor << ", " << f.height << "; Key: " << yCoor*xCoor << endl;
@@ -398,7 +400,7 @@ Point remap2Polar(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*23.3;
+	float rangeAlt = (500 - p->y)*24;
 	out.y = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
 	out.x = p->x;
 	return out;
@@ -409,7 +411,7 @@ Point convertBack(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*23.3;
+	float rangeAlt = (500 - p->y)*24;
 	float range = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
 	out.x = range*cos((p->x)*CV_PI/180); //+4 there is a misplacement of around 4 degrees in the estimation (ToDo: find out why)
 	out.y = range*sin((p->x)*CV_PI/180);
@@ -421,7 +423,7 @@ Point convertBack_Polar(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*23.3;
+	float rangeAlt = (500 - p->y)*24;
 	float range = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
 			
 	int step = 11650/500;
@@ -510,7 +512,7 @@ void modeFinder(const Mat* img, Size sz, list<Point>& locations)
 			meanShift(*img, kcpy, term);
 			//RotatedRect out = CamShift(*img, kcpy, term);
 			Point p (kcpy.x+kcpy.width/2, kcpy.y+kcpy.height/2);
-			float range = (img->rows-(p.y))*23.3; //binSize
+			float range = (img->rows-(p.y))*24; //binSize
 			float thresh = 68103*exp((-0.0004687)*range);
 			int val = img->ptr<ushort>(p.y)[(int)p.x];
 			if (val > thresh)
@@ -610,12 +612,12 @@ void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
 			{
 				Point2i p = b[i];
 								
-				float rangeTmp = (bw.rows-p.y)*23.3; //binSize
+				float rangeTmp = (bw.rows-p.y)*24; //binSize
 				float thresh;
 				if (rangeTmp > 2300)
-					thresh= 67500*exp((-0.0005)*rangeTmp); //low threshold
+					thresh= 67900*exp((-0.00045)*rangeTmp); //low threshold
 				else
-					thresh = 10000;
+					thresh = 15000;
 				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
 				int w = bw.ptr<ushort>(p.y)[p.x];
 				if (w > thresh) //check that there is at least one pixel that get the higher threshold
@@ -705,7 +707,7 @@ void growRegions2(Mat& img, const Mat* imgCpy2, const Mat* imgCpy1)
 			if (ptr2[j] > 0)
 			{
 
-				float range = (img.rows-(i))*23.3; //binSize
+				float range = (img.rows-(i))*24; //binSize
 				float thresh = 68103*exp((-0.00055)*range); //low threshold
 
 				Mat roi2 = (*imgCpy2)(k);
@@ -790,7 +792,7 @@ void ccDetection(Mat& img, list<Person>& people)
 		for (int j = 0; j < img.cols; j++)
 		{
 			int val = ptr[j];
-			float range = (img.rows-(i))*23.3; //binSize
+			float range = (img.rows-(i))*24; //binSize
 			
 			//linearize version of the threshold
 			//float thresh;
@@ -799,7 +801,7 @@ void ccDetection(Mat& img, list<Person>& people)
 			//else
 			//	thresh = -0.73*range+769;
 
-			float thresh = 60000*exp((-0.0007)*range); //low threshold
+			float thresh = 60000*exp((-0.00065)*range); //low threshold
 			if (val < thresh)
 				ptr[j] = 0;
 		}
@@ -868,7 +870,7 @@ void nms(const Mat* img, Size sz, list<Point>& locations)
 			k.x = j;			
 			int val = ptr[j+(sz.width/2)];
 			
-			float range = (img->rows-(row))*23.3; //binSize
+			float range = (img->rows-(row))*24; //binSize
 			float thresh = 68103*exp((-0.0004687)*range);
 
 			//convert16to8(img, imgCpy);
@@ -904,8 +906,8 @@ void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
 		pMean.y = (YRes-1) - y; //flip around X axis.
 
 		//Covariance projection to MoA
-		float sigmaAlphaRad = p.sigmaX*CV_PI/180;
-		float sigmaRange = p.sigmaY;
+		float sigmaAlphaRad = p.sigmaX*2*CV_PI/180;
+		float sigmaRange = p.sigmaY*2;
 		float meanAlpha = p.mean.x*CV_PI/180; //rad
 		float meanRange = p.mean.y; //mm
 						
@@ -950,7 +952,7 @@ void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
 			//END OPTIONS
 
 		circle(moa, pMean, 2, Scalar(0,0,255));
-		ellipse(moa, pMean, Size(sigmaY_II*3, sigmaX_II*3), -p.mean.x, 0, 360, Scalar(0,0,255));
+		ellipse(moa, pMean, Size(sigmaY_II, sigmaX_II), -p.mean.x, 0, 360, Scalar(0,0,255));
 		iterLocs++;
 	}
 	people.clear();
@@ -1191,13 +1193,13 @@ int main(int argc, char* argv[])
 				//polarAlt_smooth contains the actual number of points projected
 				//so if I select a roi i could retrieve all the information
 				//if i could retrieve the mean and the variance will be very useful
-				
+								
 				//For display purposes
 				convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 				convert16to8(&polarAlt, polarAlt_);
 				convert16to8(&polar, polar_);
+				
 				displayDetections(people, polarAlt_smooth_, *activityMap);
-
 				if (debug > DEBUG_LOW)//Show the comparison between the smoothed and the original remap polar space
 				{
 					Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
