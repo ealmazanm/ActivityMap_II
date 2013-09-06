@@ -30,6 +30,7 @@ ofstream outStd("d:/Emilio/Kinect/DepthSensorStudy/PeopleVariance.txt");
 ofstream outDebugFile("d:/Debug.txt");
 ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_BGUpdt.txt");
 ofstream outPerson("c:\\Dropbox\\PhD\\Matlab\\PdF_person\\pdf_points.txt");
+ofstream outHeights("c:\\Dropbox\\PhD\\Matlab\\Height_People\\heights.txt");
 int debugFrame = 47;
 
 vector<vector<float>> peopleRange;
@@ -37,14 +38,36 @@ Rect area (-1, -1, -1, -1);
 char* windPolarName = "Polar";
 char* windMoA = "Activity Map";
 char* windPolarSmooth = "Polar Alt Smooth";
-int step = 0;
 RNG rng(12345);
 
 int debug = DEBUG_HIGH;
 
-//debug
-int DEPTH_STEP, X_STEP;
 int frames = 0;
+
+//Remap Polar Space
+float MAX_RANGE;
+int RANGE_ROWS = 500;
+int RANGE_STEP;
+int SCALE_RANGE_ALT; //scale the alternative espace to match MAX_RANGE
+float DEPTH_SCALE = 0.7; // decide the scaling factor with respect to MAX_RANGE
+int KINECTS_DISPLACEMENT = 1400; 
+
+
+//Time interval checking
+const int TOTAL_INTERVALS = 9;
+const int BSUB_ID = 0;
+const int RPSPACE_ID = 1;
+const int MOA_ID = 2;
+const int DET_ID = 3;
+const int BACKPR_ID = 4;
+const int PTRANS_ID = 5;
+const int SMOOTH_ID = 6;
+const int DISPLAY_ID = 7;
+const int TOT_ID = 8;
+char* titles[TOTAL_INTERVALS] = {"BACKGROUND SUBTRACTION", "REMAP POLAR SPACE", "MAP OF ACTIVITY", "DETECTION", "POINTS BACKPROJECTION", "POINTS TRANSFORMATION", "SMOOTH", "DISPLAY", " TOTAL"};
+float totalIntervals[TOTAL_INTERVALS] = {0,0,0,0,0,0,0,0,0};
+
+
 
 struct Feature
 {
@@ -53,13 +76,18 @@ struct Feature
 };
 typedef multimap <int, Feature, less<int>> mmFS;
 
+struct BinFeature
+{
+	Scalar meanColor;
+	int total;
+};
 
 struct Person
 {
    Point  mean;
    int sigmaY;
    int sigmaX;
-	   
+   vector<BinFeature> model;
 };
 
 
@@ -95,7 +123,7 @@ void selectROI_callBack(int event, int x, int y, int flags, void* param)
 						if (val < 255)
 						{
 							//convert to range in space
-							float range = i*step;
+							float range = i*RANGE_STEP;
 							for (val; val < 255; val++)
 								personRange.push_back(range);
 						}
@@ -120,12 +148,12 @@ void selectPoint_callBack(int event, int x, int y, int flags, void* param)
 		imshow("Tmp", tmp);
 		waitKey(0);
 		
-		float X = ActivityMap_Utils::findCoordinate_inv(x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, X_STEP);
+
+		float X = ActivityMap_Utils::findCoordinate_inv(x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, ActivityMap_Utils::X_STEP);
 		int yy = moa->rows - y;
-		float Z = ActivityMap_Utils::findCoordinate_inv(yy, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, DEPTH_STEP);
+		float Z = ActivityMap_Utils::findCoordinate_inv(yy, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, ActivityMap_Utils::Z_STEP);
 						
 
-		int step = 11650/500;
 		float range = sqrtf(pow(X,2) + pow(Z,2));
 		int angle = 90;
 		if (X != 0 && Z != 0)
@@ -135,21 +163,23 @@ void selectPoint_callBack(int event, int x, int y, int flags, void* param)
 				angle = 180-((atanf(Z/abs(X)))*180/CV_PI);
 
 		float range_m = range/1000;
-		float range_Alt = (int)25896 * ((0.33*log(10+3*range_m))-0.80597);
-		int yAlt = 500 - ((int)range_Alt/step);	
+		float range_Alt = (int)SCALE_RANGE_ALT * ((0.33*log(10+3*range_m))-0.80597);
+		int yAlt = RANGE_ROWS - ((int)range_Alt/RANGE_STEP);	
 
 		//Calculate range
-		float rangeAlt_back = (500 - yAlt)*step;
-		float range_back = (-3.83328*(0.869577-exp(0.000117018*rangeAlt_back)))*1000;
+		float rangeAlt_back = (RANGE_ROWS - yAlt)*RANGE_STEP;
+		float range_back = (-3.83328*(0.869577-exp( (3.0303*rangeAlt_back)/SCALE_RANGE_ALT) ) )*1000;
+
 	
 		float X_Back = range_back*cos(angle*CV_PI/180); 
 		float Z_Back = range_back*sin(angle*CV_PI/180);
 
-		int x_Back =  ActivityMap_Utils::findCoordinate(X_Back, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, X_STEP);
-		int yC =  ActivityMap_Utils::findCoordinate(Z_Back, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, DEPTH_STEP);
-		int y_Back = (YRes-1) - yC; //flip around X axis.
 
-		circle(tmp, Point(x_Back, y_Back), 2, Scalar(0,255,0));
+		XnPoint3D p3D;
+		p3D.X = X_Back; p3D.Y = ActivityMap_Utils::CEILING_THRESHOLD-1; p3D.Z = Z_Back;
+		Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE);
+		if (p2D.x != -1)
+			circle(tmp, Point(p2D.x, p2D.y), 2, Scalar(0,255,0));
 		
 		imshow("Tmp", tmp);
 		waitKey(0);
@@ -164,7 +194,6 @@ void selectPoint2_callBack(int event, int x, int y, int flags, void* param)
 	Mat* moa = images[1];
 	Mat* polarSmooth = images[0];
 	
-	int step = 11650/500;
 	if (event == CV_EVENT_LBUTTONDOWN) 
 	{
 		circle(*polarSmooth, Point(x,y), 2, Scalar::all(225));
@@ -172,17 +201,18 @@ void selectPoint2_callBack(int event, int x, int y, int flags, void* param)
 		//imshow(windPolarSmooth, *polarSmooth);
 
 		//Calculate range
-		float rangeAlt_back = (500 - y)*step;
-		float range_back = (-3.83328*(0.869577-exp(0.000117018*rangeAlt_back)))*1000;
+		float rangeAlt_back = (RANGE_ROWS - y)*RANGE_STEP;
+		float range_back = (-3.83328*(0.869577-exp( (3.0303*rangeAlt_back)/SCALE_RANGE_ALT) ) )*1000;
+
 	
-		float X_Back = range_back*cos(x*CV_PI/180); 
-		float Z_Back = range_back*sin(x*CV_PI/180);
-
-		int x_Back =  ActivityMap_Utils::findCoordinate(X_Back, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, X_STEP);
-		int yC =  ActivityMap_Utils::findCoordinate(Z_Back, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, DEPTH_STEP);
-		int y_Back = (YRes-1) - yC; //flip around X axis.
-
-		circle(*moa, Point(x_Back, y_Back), 2, Scalar(0,255,0));
+		XnPoint3D p3D;
+		p3D.X = range_back*cos(x*CV_PI/180); 
+		p3D.Z = range_back*sin(x*CV_PI/180);
+		p3D.Y = ActivityMap_Utils::CEILING_THRESHOLD-1;
+		
+		Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D,MAX_RANGE);
+		if (p2D.x != -1)
+			circle(*moa, Point(p2D.x, p2D.y), 2, Scalar(0,255,0));
 		
 		imshow(windMoA, *moa);
 		waitKey(0);
@@ -191,16 +221,33 @@ void selectPoint2_callBack(int event, int x, int y, int flags, void* param)
 }
 
 
-void updatePolarAlternateive(Mat* polarAlt, Mat* polar, const XnPoint3D* p3D, const int nP)
+/*
+polarAlt(out): Updates the positions where the 3D points project after the remapping.
+polar(out): Points projected from the transform points into thep polar coordinate system
+featureSpace(out): Feature space of colour and height. Each position in the polarAlt contain a set of features. Each feature corresponds from a point that projected onto that pixel
+
+p3D(in): List of foreground points for a particular kinect
+points2D(in): List of 2D points of the image plane for a particular kinect
+rgbMap(in): Map of rgb colours for a particular kinect
+nP(in): Number of foreground points.
+*/
+void updatePolarAlternateive(Mat* polarAlt, Mat* polar, mmFS& fs, const XnPoint3D* p3D, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap, const int nP)
 {
 
-	//max range (mm)
-	double MaxRange = 11650;
-	step = ceil(MaxRange/polarAlt->rows);
 	for (int i = 0; i < nP; i++)
 	{
 		XnPoint3D p = p3D[i];
+			
 		float range = sqrtf(pow(p.X,2) + pow(p.Z,2));
+		if (range > MAX_RANGE || p.Z > ActivityMap_Utils::MAX_Z  || p.Y > ActivityMap_Utils::CEILING_THRESHOLD || p.Y < ActivityMap_Utils::FLOOR_THRESHOLD)
+		{
+			if (debug > DEBUG_NONE)
+				outDebugFile << "UpdatePolarAlternative: 3D Point Rejectected. Info: 3DPoint: " << p.X <<", "<< p.Y << ", " << p.Z << 
+				". Range: " << range << ". MAX_RANGE: " << MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESHOLD: " <<
+				ActivityMap_Utils::CEILING_THRESHOLD << ". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+			continue; //TODO: ADD A LOG OUTPUT
+		}
+		
 		int angle = 90;
 		if (p.X != 0 && p.Z != 0)
 			if (p.X > 0)
@@ -210,50 +257,42 @@ void updatePolarAlternateive(Mat* polarAlt, Mat* polar, const XnPoint3D* p3D, co
 
 	
 		float range_m = range/1000;
-		float range_Alt = (int)25896 * ((0.33*log(10+3*range_m))-0.80597); // three distances
+		float range_Alt = SCALE_RANGE_ALT * ((0.33*log(10+3*range_m))-0.80597); // three distances
 
-		int yPos = polarAlt->rows - ((int)range_Alt/step);	
+		int yPos = RANGE_ROWS - ((int)range_Alt/RANGE_STEP);	
 		if (yPos < 0 || yPos >= polarAlt->rows)
-			cout << "Hey" << endl;
+		{
+			if (debug > DEBUG_NONE)
+				outDebugFile << "UpdatePolarAlternative: BAD REMAPING (Remap Polar Space). Info: 3DPoint: " << p.X <<", "<< p.Y << ", " << p.Z << ". PolarPoint: " <<
+					 range <<", "<< angle << ". RemapPolarPoint: " << range_Alt << ". RmapPolarPlanview: " << angle << ", " << yPos <<
+					 ". SCALE_RANGE_ALT: " << SCALE_RANGE_ALT << ". RANGE_ROWS: " << RANGE_ROWS << ". RANGE_STEP: " << RANGE_STEP << endl;
+			continue;
+		}
 
 		//int val = polarAlt->ptr<ushort>(yPos)[angle] - 1;
 		polarAlt->ptr<ushort>(yPos)[angle]++;
 		
-		yPos = polar->rows - ((int)range/step);
+		//add a new feature
+		XnRGB24Pixel color = rgbMap[(int)points2D[i].Y*XN_VGA_X_RES+(int)points2D[i].X]; //TODO: CONVERT TO HSV
+		Feature f;
+		f.height = (float)p3D[i].Y;
+		f.color = Scalar(color.nRed, color.nGreen, color.nBlue);
+		int key = yPos * polarAlt->cols + angle;
+		fs.insert(mmFS::value_type(key, f));
+
+
+		yPos = polar->rows - ((int)range/RANGE_STEP);
 		if (yPos < 0 || yPos >= polarAlt->rows)
-			cout << "Hey" << endl;
-		polar->ptr<ushort>(yPos)[angle]++;
-	}
-}
-
-void updateActivityMap(Mat& activityMap, Mat& activityMap_back, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap)
-{
-	Mat hightMap = Mat::Mat(activityMap.size(), CV_32F);
-	Utils::initMatf(hightMap, -5000);
-	for (int i = 0; i < nP; i++)
-	{
-		int xCoor = am->findCoordinate(p3D[i].X, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, am->xStep);
-		int yC = am->findCoordinate(p3D[i].Z, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, am->depthStep);
-		int yCoor = (YRes-1) - yC; //flip around X axis.
-
-		XnRGB24Pixel color = rgbMap[(int)points2D[i].Y*XN_VGA_X_RES+(int)points2D[i].X];
-
-		uchar* ptr = activityMap.ptr<uchar>(yCoor);
-		uchar* ptr_back = activityMap_back.ptr<uchar>(yCoor);
-		float* ptrH = hightMap.ptr<float>(yCoor);
-
-		if (ptrH[xCoor] < (float)p3D[i].Y)
 		{
-			ptrH[xCoor] = (float)p3D[i].Y;
-
-			ptr[3*xCoor] = color.nBlue;
-			ptr[3*xCoor+1] = color.nGreen;
-			ptr[3*xCoor+2] = color.nRed;
-
-			ptr_back[3*xCoor] = color.nBlue;
-			ptr_back[3*xCoor+1] = color.nGreen;
-			ptr_back[3*xCoor+2] = color.nRed;
+			if (debug > DEBUG_NONE)
+				outDebugFile << "UpdatePolarAlternative: BAD REMAPING (Polar Space). Info: 3DPoint: " << p.X <<", "<< p.Y << ", " << p.Z << ". PolarPoint: " <<
+					 range <<", "<< angle << ". RANGE_ROWS: " << RANGE_ROWS << ". RANGE_STEP: " << RANGE_STEP << endl;
+			continue;
 		}
+		polar->ptr<ushort>(yPos)[angle]++;
+
+
+		
 	}
 }
 
@@ -268,36 +307,29 @@ nP(in): Number of foreground points.
 points2D(in): List of 2D points of the image plane for a particular kinect
 rgbMap(in): Map of rgb colours for a particular kinect
 */
-void updateActivityMap(Mat& activityMap, Mat& activityMap_back, mmFS& fs, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap)
+void updateActivityMap(Mat& activityMap, Mat& activityMap_back, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D)
 {
 	for (int i = 0; i < nP; i++)
 	{
-		int xCoor = am->findCoordinate(p3D[i].X, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, am->xStep);
-		int yC = am->findCoordinate(p3D[i].Z, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, am->depthStep);
-		int yCoor = (YRes-1) - yC; //flip around X axis.
+		Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D[i], MAX_RANGE);
 
-		XnRGB24Pixel color = rgbMap[(int)points2D[i].Y*XN_VGA_X_RES+(int)points2D[i].X];
-
-		uchar* ptr = activityMap.ptr<uchar>(yCoor);
-		uchar* ptr_back = activityMap_back.ptr<uchar>(yCoor);
-		
-		Feature f;
-		f.height = (float)p3D[i].Y;
-		f.color = Scalar(color.nRed, color.nGreen, color.nBlue);
-		int key = yCoor * am->getResolution().width + xCoor;
-		fs.insert(mmFS::value_type(key, f));
-		if (debug == DEBUG_OUT && frames == debugFrame)
+		if (p2D.x != -1)
 		{
-			outDebugFile << i << ": " << xCoor << ", " << yCoor << ", " << f.height << "; Key: " << yCoor*xCoor << endl;
+			uchar* ptr = activityMap.ptr<uchar>(p2D.y);
+			uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
+
+			ptr[3*p2D.x] = ptr_back[3*p2D.x] = 0;
+			ptr[3*p2D.x+1] = ptr_back[3*p2D.x+1] = 0;
+			ptr[3*p2D.x+2] = ptr_back[3*p2D.x+2] = 0;
 		}
-
-
-		ptr[3*xCoor] = ptr_back[3*xCoor] = 0;
-		ptr[3*xCoor+1] = ptr_back[3*xCoor+1] = 0;
-		ptr[3*xCoor+2] = ptr_back[3*xCoor+2] = 0;
+		else
+		{
+			if (debug > DEBUG_NONE)
+				outDebugFile << "UpdateActivityMap: BAD PROJECTION (MoA). Info: 3DPoint: " << p3D[i].X <<", "<< p3D[i].Y << ", " << p3D[i].Z <<
+				"MAX_RANGE: " << MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
+				". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+		}
 	}
-	if (debug == DEBUG_OUT)
-		outDebugFile << "Frame: " << frames  << ". NumPoints: " << nP << ". Features Space size: " << fs.size() << endl;
 }
 
 
@@ -338,61 +370,6 @@ float distf(Point p1, Point p2)
 }
 
 /*
-This function is only called when there value in kernel is > 0
-*/
-void look4Centr(Point& centr, Rect& kernel, Mat& copyImg, Mat& original)
-{
-	Mat nullMat = Mat::zeros(kernel.width, kernel.height, CV_16UC1);
-	centr.x = kernel.x+kernel.width/2;
-	centr.y = kernel.y+kernel.height/2;
-	int sumX, sumY, sumVals;
-	Point ctrTmp(-1,-1);
-	int minDist = 5;
-	int maxNumIters = 5;
-	int iter = 0;
-	do
-	{
-		if (ctrTmp.x != -1)
-		{
-			centr.x = ctrTmp.x;
-			centr.y = ctrTmp.y;
-		}
-		//Calculate centroid at kernel position		
-		sumX = sumY = sumVals = 0;
-		for (int i = kernel.y; i < kernel.y+kernel.height; i++)
-		{
-			ushort* ptr = original.ptr<ushort>(i);
-			for (int j = kernel.x; j < kernel.x+kernel.width; j++)
-			{
-				int val = (int)ptr[j];
-				sumX += j*val;
-				sumY += i*val;
-				sumVals += val;
-			}
-		}
-		ctrTmp.x = sumX/sumVals;
-		ctrTmp.y = sumY/sumVals;
-		//clean copy
-		Mat roi = copyImg(kernel);
-		nullMat.copyTo(roi);
-		//update kernel to new position
-		kernel.x = ctrTmp.x - kernel.width/2;
-		kernel.y = ctrTmp.y - kernel.height/2;
-		//Check boundaries of the new kernel
-		assert(kernel.x+kernel.width < original.cols);
-		assert(kernel.y+kernel.height < original.rows);
-		assert(kernel.x >= 0 && kernel.y >= 0);
-		iter++;
-	}while(distf(centr, ctrTmp) > minDist && iter < maxNumIters);
-
-	centr.x = ctrTmp.x;
-	centr.y = ctrTmp.y;
-	//Update original
-	copyImg.copyTo(original);
-}
-
-
-/*
 p = Point in the remap polar space
 out = Correspoding point in the Polar coordinate space
 */
@@ -400,65 +377,43 @@ Point remap2Polar(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*24;
-	out.y = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
+	float rangeAlt = (RANGE_ROWS - p->y)*RANGE_STEP;
+	out.y = (-3.83328*(0.869577-exp( (3.0303*rangeAlt)/SCALE_RANGE_ALT) ) )*1000;
 	out.x = p->x;
 	return out;
 
 }
 
+/*
+Convert a point from the remap polar space rep. to the MoA (3D)
+*/
 Point convertBack(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*24;
-	float range = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
+	float rangeAlt = (RANGE_ROWS - p->y)*RANGE_STEP + RANGE_STEP/2;
+	float range = (-3.83328*(0.869577-exp( (3.0303*rangeAlt)/SCALE_RANGE_ALT) ) )*1000;
 	out.x = range*cos((p->x)*CV_PI/180); //+4 there is a misplacement of around 4 degrees in the estimation (ToDo: find out why)
 	out.y = range*sin((p->x)*CV_PI/180);
 	return out;
 }
 
-
+/*
+Convert a point from the remap polar space rep. to the polar space rep.
+*/
 Point convertBack_Polar(const Point* p)
 {
 	Point out;
 	//Calculate range
-	float rangeAlt = (500 - p->y)*24;
-	float range = (-3.83328*(0.869577-exp(0.000117018*rangeAlt)))*1000;
+	float rangeAlt = (RANGE_ROWS - p->y)*RANGE_STEP;
+	float range = (-3.83328*(0.869577-exp( (3.0303*rangeAlt)/SCALE_RANGE_ALT) ) )*1000;
 			
-	int step = 11650/500;
-	out.y = 500 - ((int)range/step);
+	out.y = RANGE_ROWS - ((int)range/RANGE_STEP);
 	out.x = p->x;
 
 	return out;
 }
 
-
-
-/*
-polarAlt : Mat(500,181, CV_16UC1);
-polarAlt_smooth : Mat(500,181, CV_16UC1);
-sz : Size of the kernel
-*/
-void uniformConvolution(const Mat* polarAlt, Mat& polarAlt_smooth, Size sz)
-{
-	Rect k = Rect(0,0, sz.width, sz.height);
-
-	int endRow = polarAlt->rows - sz.height;
-	int endCol = polarAlt->cols - sz.width;
-	Utils::initMat1s(polarAlt_smooth, 0);
-	for (int i = 0; i < endRow; i++)
-	{
-		ushort* ptrSmooth = polarAlt_smooth.ptr<ushort>(i+sz.height/2);
-		for (int j = 0; j < endCol; j++)
-		{
-			k.x = j;
-			k.y = i;
-			Mat roi = (*polarAlt)(k);
-			ptrSmooth[j+sz.width/2] = sum(roi).val[0];
-		}
-	}
-}
 
 
 void addGrid(Mat& img, Size sz)
@@ -491,37 +446,6 @@ bool isMaximum(const Mat* img, Rect k)
 		i++;
 	}
 	return (!found);
-}
-
-void modeFinder(const Mat* img, Size sz, list<Point>& locations)
-{
-	Mat imgCpy = Mat(img->size(), CV_8UC1);
-
-	Rect k = Rect(0,0, sz.width, sz.height);
-	TermCriteria term = TermCriteria(TermCriteria::COUNT, 50, 0.1);
-	int endRow = img->rows - sz.height;
-	int endCol = img->cols - sz.width;
-	for (int i = 0; i < endRow; i += sz.height)
-	{
-		k.y = i;
-		for (int j = 0; j < endCol; j += sz.width)
-		{
-			k.x = j;		
-			Rect kcpy (k.x, k.y, k.width, k.height);
-
-			meanShift(*img, kcpy, term);
-			//RotatedRect out = CamShift(*img, kcpy, term);
-			Point p (kcpy.x+kcpy.width/2, kcpy.y+kcpy.height/2);
-			float range = (img->rows-(p.y))*24; //binSize
-			float thresh = 68103*exp((-0.0004687)*range);
-			int val = img->ptr<ushort>(p.y)[(int)p.x];
-			if (val > thresh)
-			{
-				if (find(locations.begin(), locations.end(), p) == locations.end())
-					locations.push_back(p);
-			}
-		}
-	}
 }
 
 
@@ -581,7 +505,7 @@ Perform a connected component labeling on the remap polar coordinate space.
 
 bw: Mat(500,181, CV_16UC1);
 */
-void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
+void detectCC(Mat& bw, list<Person>* people, mmFS& fs, Mat& debugImg)
 {
 
 	Mat imgCpy = Mat(bw.size(), CV_8UC1);
@@ -600,7 +524,7 @@ void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
 	float x, y, xx, yy, ww;
 	float range,alpha, rr, aa;
 
-
+	std::pair <mmFS::iterator, mmFS::iterator> ret;
 	while (iter != blobs.end())
 	{
 		bool pass = false;
@@ -612,10 +536,10 @@ void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
 			{
 				Point2i p = b[i];
 								
-				float rangeTmp = (bw.rows-p.y)*24; //binSize
+				float rangeTmp = (bw.rows-p.y)*RANGE_STEP; //binSize
 				float thresh;
 				if (rangeTmp > 2300)
-					thresh= 67900*exp((-0.00045)*rangeTmp); //low threshold
+					thresh= 67900*exp((-0.0004)*rangeTmp); //low threshold
 				else
 					thresh = 15000;
 				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
@@ -648,6 +572,34 @@ void detectCC(Mat& bw, list<Person>* people, Mat& debugImg)
 				
 					xx += w*powf(point.x-p.mean.x,2);
 					yy += w*powf(point.y-p.mean.y,2);
+
+					//get all the features (colour, height) associated. Multimap (key = point.y*180+point.x, values = feature(colour, height))
+					//For each feature update the two fields of the model for the 
+					//corresponding bin (depends on the height): the number of points 
+					//in that particular bin and the avg colour (CAi+1 = (xi+1 + iCAi)/i+1).
+					
+					int key = point.y*bw.cols + point.x;
+					if (fs.count(key) > 0)
+					{
+						ret = fs.equal_range(point.y*bw.cols + point.x);
+						for (mmFS::iterator iter = ret.first; iter != ret.second; iter++)
+						{
+							Feature feat = iter->second;
+							if (debug == DEBUG_OUT && frames == debugFrame)
+							{
+								outHeights << feat.height << endl;
+							}
+					//		//calculate position in the vector (depends on the number of bins and min and max heights.
+					//		int binPos = calculateBinPos(feat.height);
+					//		Scalar meanColor = p.model[binPos].meanColor;
+					//		int totalP = p.model[binPos].total;
+					//		meanColor[0] = (feat.color[0] + totalP*meanColor[0])/(totalP+1);
+					//		meanColor[1] = (feat.color[1] + totalP*meanColor[1])/(totalP+1);
+					//		p.model[binPos].meanColor = meanColor;
+					//		p.model[binPos].total++;
+						}
+					}
+
 				}
 
 				p.sigmaY = sqrtf(yy/ww);
@@ -692,95 +644,11 @@ void printValuesF(const Mat* m, char* title)
 }
 
 
-void growRegions2(Mat& img, const Mat* imgCpy2, const Mat* imgCpy1)
-{
-	Rect k = Rect(0,0, 5, 5);
-
-	//Find non zero points in imgCpy
-	for (int i = k.height/2; i < imgCpy2->rows-k.height/2; i++)
-	{
-		const ushort* ptr2 = imgCpy2->ptr<ushort>(i);
-		k.y = i - k.height/2;;
-		for (int j = k.width/2; j < imgCpy2->cols-k.width/2; j++)
-		{
-			k.x = j - k.width/2;
-			if (ptr2[j] > 0)
-			{
-
-				float range = (img.rows-(i))*24; //binSize
-				float thresh = 68103*exp((-0.00055)*range); //low threshold
-
-				Mat roi2 = (*imgCpy2)(k);
-				Mat roi1 = (*imgCpy1)(k);
-				Mat roi = img(k);
-				/*printValuesS(&roi2, "Roi2");
-				printValuesS(&roi1, "Roi1");
-				printValuesS(&roi, "Roi");*/
-
-				for (int y = 0; y < k.height; y++)
-				{
-					ushort *p2 = roi2.ptr<ushort>(y);
-					ushort *p1 = roi1.ptr<ushort>(y);
-					ushort *p = roi.ptr<ushort>(y);
-					for (int x = 0; x < k.width; x++)
-					{
-						if (p2[x] == 0 && p1[x] > thresh)
-							p[x] = p1[x];
-					}
-				}
-			//	printValuesS(&roi, "Roi");
-
-	/*			Mat mask2, mask1, mask;	
-				roi2.copyTo(mask1);
-				threshold(roi2, mask1, 1, 10, CV_THRESH_BINARY_INV);
-				printValuesS(&mask1, "Mask1");
-
-				
-				threshold(roi1, mask2, thresh, 1, CV_THRESH_BINARY);	
-				printValuesS(&mask2, "Mask2");
-				
-				bitwise_xor(mask1, mask2, mask);
-				printValuesS(&mask, "Mask");
-
-				Mat roi = img(k);
-				add(roi1, roi2, roi, mask);*/
-			}
-
-		}
-	}
-}
-
-void growRegions(Mat& img, const Mat* imgCpy2, const Mat* imgCpy1)
-{
-	Rect kernel = Rect(0,0, 5,5);
-	//for (int i = 0; i < img.rows-kernel.height; i++)
-	for (int i = img.rows-kernel.height-1; i >= 0; i--)
-	{
-		ushort* ptr1 = img.ptr<ushort>(i);
-		const ushort* ptr2 = imgCpy2->ptr<ushort>(i);
-
-		kernel.y = i;
-		//for (int j = 0; j < img.cols-kernel.width; j++)
-		for (int j = img.cols-kernel.width-1; j >= 0 ; j--)
-		{
-			kernel.x = j;
-			int val = ptr2[j];
-			if (val == 0)
-			{
-				Mat roi = (*imgCpy2)(kernel);
-				int sumRoi = sum(roi).val[0];
-				if (sumRoi > 0)
-					ptr1[j] = imgCpy1->ptr<ushort>(i)[j];
-			}
-		}
-	}
-}
-
 /*
 img : Mat(500,181, CV_16UC1)
 
 */
-void ccDetection(Mat& img, list<Person>& people)
+void ccDetection(Mat& img, list<Person>& people, mmFS& fs)
 {
 	Mat imgCpy1, imgCpy2;
 	img.copyTo(imgCpy1);
@@ -792,7 +660,7 @@ void ccDetection(Mat& img, list<Person>& people)
 		for (int j = 0; j < img.cols; j++)
 		{
 			int val = ptr[j];
-			float range = (img.rows-(i))*24; //binSize
+			float range = (img.rows-(i))*RANGE_STEP; //binSize
 			
 			//linearize version of the threshold
 			//float thresh;
@@ -807,12 +675,8 @@ void ccDetection(Mat& img, list<Person>& people)
 		}
 	}
 	img.copyTo(imgCpy2);
-	//grow image using a 5x5 kernel. If it is close to a region with a non zero value
-	//then the original value is recovered and updated
-	//growRegions(img, &imgCpy2, &imgCpy1);
-	//growRegions2(img, &imgCpy2, &imgCpy1);
 	
-	Mat outDebug = Mat(500, 181, CV_8UC3);	
+	Mat outDebug = Mat(RANGE_ROWS, 181, CV_8UC3);	
 	if (debug > DEBUG_MED)
 	{
 		//Show the results after first thresholding
@@ -840,52 +704,11 @@ void ccDetection(Mat& img, list<Person>& people)
 
 			}
 		}
-
-
 	}
-	detectCC(img, &people, outDebug);
+	detectCC(img, &people, fs, outDebug);
 	if (debug > DEBUG_MED)
 	{
 		imshow("Thresholds", outDebug);	
-	}
-}
-
-/*
-img : Mat(500,181, CV_16UC1);
-*/
-void nms(const Mat* img, Size sz, list<Point>& locations)
-{
-	Mat imgCpy = Mat(img->size(), CV_8UC1);
-	Rect k = Rect(0,0, sz.width, sz.height);
-
-	int endRow = img->rows - sz.height;
-	int endCol = img->cols - sz.width;
-	for (int i = 0; i < endRow; i++)
-	{
-		k.y = i;
-		int row = i+(sz.height/2);
-		const ushort* ptr = img->ptr<ushort>(row);
-		for (int j = 0; j < endCol; j++)
-		{
-			k.x = j;			
-			int val = ptr[j+(sz.width/2)];
-			
-			float range = (img->rows-(row))*24; //binSize
-			float thresh = 68103*exp((-0.0004687)*range);
-
-			//convert16to8(img, imgCpy);
-			//rectangle(imgCpy, k, Scalar::all(127));
-			//imshow("test", imgCpy);
-			//waitKey(1);
-
-			if (val > thresh && isMaximum(img, k))
-			{
-				Point p;
-				p.x = k.x+(k.width/2);
-				p.y = k.y+(k.height/2);
-				locations.push_back(p);
-			}
-		}
 	}
 }
 
@@ -901,10 +724,22 @@ void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
 		//Mean projection to MoA
 		Point cMoA, pMean;
 		cMoA = convertBack(&p.mean);
-		pMean.x = ActivityMap_Utils::findCoordinate(cMoA.x, ActivityMap_Utils::MIN_X, ActivityMap_Utils::MAX_X, X_STEP);
-		int y = ActivityMap_Utils::findCoordinate(cMoA.y, ActivityMap_Utils::MIN_Z, ActivityMap_Utils::MAX_Z, DEPTH_STEP);
-		pMean.y = (YRes-1) - y; //flip around X axis.
+		XnPoint3D p3D;
+		p3D.X = cMoA.x; p3D.Y = ActivityMap_Utils::CEILING_THRESHOLD - 1; p3D.Z = cMoA.y;
+		pMean = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE);
+		if (pMean.x == -1)
+		{
+			if (debug > DEBUG_NONE)
+			{
+				outDebugFile << "displayDetections: person located out of MoA range. INFO: RPS point: " << p.mean.x << ", " << p.mean.y <<
+					". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(p3D.X,2) + pow(p3D.Z,2)) <<". MAX_RANGE: " << 
+					MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD << 
+					". FLOOR_THRESH: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+			}
 
+			iterLocs++;
+			continue; //TODO: ERROR LOG
+		}
 		//Covariance projection to MoA
 		float sigmaAlphaRad = p.sigmaX*2*CV_PI/180;
 		float sigmaRange = p.sigmaY*2;
@@ -912,10 +747,10 @@ void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
 		float meanRange = p.mean.y; //mm
 						
 		//Jacobian matrix of partial derivatives
-		float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/X_STEP;
-		float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/X_STEP;						
-		float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/DEPTH_STEP;
-		float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/DEPTH_STEP;
+		float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/ActivityMap_Utils::X_STEP;
+		float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::X_STEP;						
+		float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::Z_STEP;
+		float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/ActivityMap_Utils::Z_STEP;
 		float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
 		Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
 		//covariance matrix in the plan view remap polar space(RPS)
@@ -965,12 +800,6 @@ Arg 2: 0:No Record; 1:Record
 */
 int main(int argc, char* argv[])
 {
-	//ofstream outKinect[NUM_SENSORS];
-	//outKinect[0].open("D:/kinect0.txt", ios::out);
-	//outKinect[1].open("D:/kinect1.txt", ios::out);
-	//outKinect[2].open("D:/kinect2.txt", ios::out);
-
-
 
 	bool saved = false;
 	int fromVideo = 1;
@@ -985,13 +814,23 @@ int main(int argc, char* argv[])
 	}
 
 	char* paths[3];
+	//paths[0] = "d:/Emilio/Tracking/DataSet/kinect0_calib.oni";
+	//paths[1] = "d:/Emilio/Tracking/DataSet/kinect1_calib.oni";
+	//paths[2] = "d:/Emilio/Tracking/DataSet/kinect2_calib.oni";
+
 	paths[0] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect0_calib.oni";
 	paths[1] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect1_calib.oni";
 	paths[2] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect2_calib.oni";
 
-	//paths[0] = "d:/Emilio/Tracking/DataSet/Cuantization_515.oni";
-
-	ActivityMap_Utils actMapCreator(NUM_SENSORS);
+	//Initialize resolutions MoA and Remap Polar space
+	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
+	float max_z_mt = ActivityMap_Utils::MAX_Z/1000;
+	float rangeVar = 2.6206*powf(max_z_mt,2)+ 0.6820*max_z_mt -0.2109; //Range at maximum depth in the remap polar space
+	MAX_RANGE = ActivityMap_Utils::MAX_Z/(cosf(KinectSensor::KINECT_HORIZ_FOV/2)) + rangeVar + KINECTS_DISPLACEMENT; 
+	//RANGE_STEP = ceil(MAX_RANGE/RANGE_ROWS);
+	//SCALE_RANGE_ALT = MAX_RANGE/(((0.33*logf(10+3*MAX_RANGE/1000))-0.80597));
+	RANGE_STEP = ceil(11650.0/RANGE_ROWS);
+	SCALE_RANGE_ALT = 25896;
 
 	KinectSensor kinects[NUM_SENSORS];
 	const XnDepthPixel* depthMaps[NUM_SENSORS];
@@ -1012,7 +851,6 @@ int main(int argc, char* argv[])
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
 	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
-	//int height = sqrtf(powf(actMapCreator.getResolution().width/2,2.0) + powf(actMapCreator.getResolution().height,2.0));
 	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
 
 	//initialize Feature space
@@ -1023,7 +861,7 @@ int main(int argc, char* argv[])
 	bool bShouldStop = false;
 	bool trans = true;
 	bool bgComplete = true;
-	bool deleteBG = true;
+	bool deleteBG = false;
 
 	Mat depthImages[NUM_SENSORS];
 	Mat rgbImages[NUM_SENSORS];
@@ -1046,28 +884,21 @@ int main(int argc, char* argv[])
 		numberOfForegroundPoints[i] = 0;
 	}
 
-	Point centres[10];
-	double angles[10];
-	
 	bool first = true;
-	int cont = 0;
-	clock_t total = 0;
 
-
-//	bool printPoints = false;
 	int TotalFrames_4 = 1670;
 	//int TotalFrames_2 = 1790;
 	int TotalFrames_2 = 900;
 
-	Mat polar = Mat(500,181, CV_16UC1);
-	Mat polarAlt= Mat(500,181, CV_16UC1);
-	Mat polarAlt_smooth= Mat(500,181, CV_16UC1);
-	Mat tmp = Mat(500, 181, CV_8UC1);
-	Mat polarAlt_ = Mat(500, 181, CV_8UC1);
-	Mat polarAlt_smooth_ = Mat(500, 181, CV_8UC1);
-	Mat polar_ = Mat(500, 181, CV_8UC1);
-	Mat polarText = Mat(500, 360, CV_8UC1);
+	Mat polar = Mat(RANGE_ROWS,181, CV_16UC1);
+	Mat polarAlt= Mat(RANGE_ROWS,181, CV_16UC1);
+	Mat polarAlt_smooth= Mat(RANGE_ROWS,181, CV_16UC1);
+	Mat polarAlt_ = Mat(RANGE_ROWS, 181, CV_8UC1);
+	Mat polarAlt_smooth_ = Mat(RANGE_ROWS, 181, CV_8UC1);
+	Mat polar_ = Mat(RANGE_ROWS, 181, CV_8UC1);
 	Mat m = Mat(polarAlt_smooth_.size(), CV_8UC3);
+	Mat* outMoA;
+	Mat outMoAScaled;
 
 	
 	int waitTime = 1;
@@ -1084,39 +915,34 @@ int main(int argc, char* argv[])
 		w1.open("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	}	
 
-
-	
 	namedWindow(windPolarName);
 	cvSetMouseCallback(windPolarName, selectROI_callBack, (Mat*)&polar_);
 	cvSetMouseCallback(windPolarName, selectPoint_callBack, (Mat*)&polar_);
-	int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
 
-	//Size of kernel;
-	int kWidth = 5;
-	int kHeight = 27;
-	Size kSize = Size(kWidth, kHeight);
-	int sWidth = 21;
-	int sHeight = 21;
-
-	//DEBUG
-	DEPTH_STEP = actMapCreator.depthStep;
-	X_STEP = actMapCreator.xStep;
+	//Size of kernel: smooth rps;
+	Mat kernel = Mat::ones(Size(5,27), CV_32F);
 
 	list<Person> people;
 	clock_t startTime = clock();
+	clock_t startTotalTime = clock();
+	clock_t startTime_tmp;
 	int nPoints = 0;
 	while (!bShouldStop && frames < TotalFrames_2)
 	{		
 
-		if (debug != DEBUG_NONE && frames%10 == 0)
+		if (debug != DEBUG_NONE)
 		{
-			clock_t endTime = clock();
-			double fps = 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10));
-			if (debug == DEBUG_OUT)
-				fpsOut << frames << " " << fps << " " << nPoints << endl;
+			outDebugFile << "Frame " << frames << endl;
+			if (frames%10 == 0)
+			{
+				clock_t endTime = clock();
+				double fps = 1/(double(endTime-startTime)/(double(CLOCKS_PER_SEC)*10));
+				if (debug == DEBUG_OUT)
+					fpsOut << frames << " " << fps << " " << nPoints << endl;
 			
-			cout << "Frame " << frames << ": " << fps << " fps. (" << nPoints << ")" << endl;
-			startTime = clock();
+				cout << "Frame " << frames << ": " << fps << " fps. (" << nPoints << ")" << endl;
+				startTime = clock();
+			}
 		}
 
 		Utils::initMat1s(polarAlt, 0);
@@ -1145,7 +971,6 @@ int main(int argc, char* argv[])
 		nPoints = 0;
 		if (bgComplete && trans) //Trans must be true
 		{
-			cont++;
 			if (first)
 			{
 				whiteBack = Mat::Mat(actMapCreator.getResolution(), CV_8UC3);
@@ -1156,12 +981,12 @@ int main(int argc, char* argv[])
 			}
 			whiteBack.copyTo(*activityMap);
 			background.copyTo(*activityMap_Back);
-
 			for (int i = 0; i < NUM_SENSORS; i++)
 			{
+				startTime_tmp = clock(); //time debuggin
 				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
+				totalIntervals[BSUB_ID] += clock() - startTime_tmp; //time debugging
 				nPoints += numberOfForegroundPoints[i];
-
 				if (debug > DEBUG_NONE)//Draw the output of the foreground detection
 				{
 					for (int c = 0; c < numberOfForegroundPoints[i]; c++)
@@ -1174,22 +999,39 @@ int main(int argc, char* argv[])
 					}
 				}
 			}
-			for (int i = 0; i < NUM_SENSORS; i++)
-			{
-				points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
-				kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
-				//Create alternative representation
-				updatePolarAlternateive(&polarAlt, &polar, points3D[i], numberOfForegroundPoints[i]);				
-				if (!fs.empty())
-					fs.clear();
-				
-				updateActivityMap(*activityMap, *activityMap_Back, fs, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i], rgbMaps[i]);
-			}
 			if (nPoints > 0)
 			{
+				for (int i = 0; i < NUM_SENSORS; i++)
+				{
+					startTime_tmp = clock();
+					points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
+					totalIntervals[BACKPR_ID] += clock() - startTime_tmp; //time debugging
+
+					startTime_tmp = clock();
+					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
+					totalIntervals[PTRANS_ID] += clock() - startTime_tmp; //time debugging
+					//Create alternative representation
+
+					startTime_tmp = clock();
+					updatePolarAlternateive(&polarAlt, &polar, fs, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i]);	
+					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
+					
+					startTime_tmp = clock();
+					updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
+					totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
+				}
+		
 				//Todo: Create a method detection(polarAlt, moAPeople)
-				uniformConvolution(&polarAlt, polarAlt_smooth, kSize); //smooth the image
-				ccDetection(polarAlt_smooth, people); //Connected component detection
+				startTime_tmp = clock();
+				filter2D(polarAlt, polarAlt_smooth, -1, kernel);
+				totalIntervals[SMOOTH_ID] += clock() - startTime_tmp; //time debugging
+
+				startTime_tmp = clock();
+				ccDetection(polarAlt_smooth, people, fs); //Connected component detection
+				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
+
+				if (!fs.empty())
+						fs.clear();
 				//polarAlt_smooth contains the actual number of points projected
 				//so if I select a roi i could retrieve all the information
 				//if i could retrieve the mean and the variance will be very useful
@@ -1198,8 +1040,14 @@ int main(int argc, char* argv[])
 				convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 				convert16to8(&polarAlt, polarAlt_);
 				convert16to8(&polar, polar_);
+				Mat *tmp = activityMap;
+				if (!deleteBG)
+					tmp = activityMap_Back;
 				
-				displayDetections(people, polarAlt_smooth_, *activityMap);
+				startTime_tmp = clock();
+				displayDetections(people, polarAlt_smooth_, *tmp);
+				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
+
 				if (debug > DEBUG_LOW)//Show the comparison between the smoothed and the original remap polar space
 				{
 					Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
@@ -1224,25 +1072,18 @@ int main(int argc, char* argv[])
 							}
 						}
 					}
-					addGrid(polarAlt_smooth_, kSize);
-					//Utils::hardMatCopy(&imgDebug, m);
+					addGrid(polarAlt_smooth_, Size(kernel.cols, kernel.rows));
 					cvSetMouseCallback(windMoA, selectPoint_callBack, (Mat*)activityMap);
 					Mat** images = new Mat*[2];
 					images[0] = &imgDebug;
 					images[1] = activityMap;
 					cvSetMouseCallback("Smooth comparison", selectPoint2_callBack, images);
-					//imshow(windPolarSmooth, m);
 					imshow("Smooth comparison", imgDebug);
 				}
-
-				
-
 			}
-			if (deleteBG)
-				imshow(windMoA, *activityMap);
-			else
-				imshow(windMoA, *activityMap_Back);
-
+			outMoA = activityMap;
+			if (!deleteBG)
+					outMoA = activityMap_Back;
 
 			if (recordOut == 1)
 			{
@@ -1251,14 +1092,20 @@ int main(int argc, char* argv[])
 			}
 		}
 		else
-		{
-			
-			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames);
-
+		{			
+			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE); 
+			outMoA = &background;
 			if (recordOut == 1 && trans)
 					w << background;
-			imshow("Activity Map", background);
 		}
+
+		if (DEPTH_SCALE < 1)
+		{			
+			resize(*outMoA, outMoAScaled, Size(outMoA->cols/DEPTH_SCALE, outMoA->rows/DEPTH_SCALE), 0,0, INTER_LINEAR);
+			outMoA = &outMoAScaled;
+		}
+		imshow(windMoA, *outMoA);
+	
 		if (debug > DEBUG_NONE)
 		{
 			imshow(windPolarName, polar_);
@@ -1271,61 +1118,6 @@ int main(int argc, char* argv[])
 		int c = waitKey(waitTime);
 		switch (c)
 		{
-		case 119: //(w) increment width of the kernel
-			{
-				if ((kWidth + 2) < polarAlt.cols)
-				{
-					kWidth += 2;
-					cout << "New kernel size: " << kWidth << ", " << kHeight << endl;
-				}
-				else
-				{
-					cout << "kernel too wide" << endl;
-				}
-				break;
-			}
-		case 115: //(s) decrease width of the kernel
-			{
-				if ((kWidth - 2) > 0)
-				{
-					kWidth -= 2;
-					cout << "New kernel size: " << kWidth << ", " << kHeight << endl;
-				}
-				else
-				{
-					cout << "kernel width cannot be 0" << endl;
-				}
-				break;
-			}
-		case 104: //(h) increment height of the kernel
-			{
-				if ((kHeight + 2) < polarAlt.rows)
-				{
-					kHeight += 2;
-					cout << "New kernel size: " << kWidth << ", " << kHeight << endl;
-				}
-				else
-				{
-					cout << "kernel too high" << endl;
-				}
-				break;
-			}
-		case 110: //(n) decrease height of the kernel
-			{
-				if ((kHeight - 2) > 0)
-				{
-					kHeight -= 2;
-					cout << "New kernel size: " << kWidth << ", " << kHeight << endl;
-				}
-				else
-				{
-					cout << "kernel height cannot be 0 or less" << endl;
-				}
-				break;
-			}
-
-
-
 		case 32:
 			{
 				saved = true;;
@@ -1349,35 +1141,32 @@ int main(int argc, char* argv[])
 			}
 		case 13: //enter
 			{
-				if (waitTime == 0)
-					waitTime=1;
-				else
-				{
-					//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
-					waitTime=0;
-				}
-				break;
-			}
-		case 2490368:
-			{
-				tilt += 5;
-				for (int i = 0; i < NUM_SENSORS; i++)
-					kinects[i].tilt(tilt);
-				cout << "tilt: " << tilt << endl;
-				break;
-			}
-		case 2621440:
-			{
-				tilt -= 5;
-				for (int i = 0; i < NUM_SENSORS; i++)
-					kinects[i].tilt(tilt);
-				cout << "tilt: " << tilt << endl;
+				deleteBG = !deleteBG;
+				//if (waitTime == 0)
+				//	waitTime=1;
+				//else
+				//{
+				//	//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
+				//	waitTime=0;
+				//}
 				break;
 			}
 		}
 		
 		frames++;
 	}
+
+
+	totalIntervals[TOT_ID] = clock() - startTotalTime;
+	//BUILD REPORT
+	outDebugFile << "EXECUTION TIME REPORT" << endl;
+	for (int i = 0; i < TOTAL_INTERVALS-1; i++)
+	{
+		float time_p = totalIntervals[i]*100/totalIntervals[TOT_ID];
+		outDebugFile << titles[i] << ": " << time_p << " %" << endl;
+	}
+	outDebugFile << "Total frames processed: " << frames << endl;
+
 	
 	for (int i = 0; i < NUM_SENSORS; i++)
 	{
