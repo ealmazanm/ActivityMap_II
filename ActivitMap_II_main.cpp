@@ -31,7 +31,7 @@ ofstream outDebugFile("d:/Debug.txt");
 ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_BGUpdt.txt");
 ofstream outPerson("c:\\Dropbox\\PhD\\Matlab\\PdF_person\\pdf_points.txt");
 ofstream outHeights("c:\\Dropbox\\PhD\\Matlab\\Height_People\\heights.txt");
-int debugFrame = 47;
+int debugFrame = -1;
 
 vector<vector<float>> peopleRange;
 Rect area (-1, -1, -1, -1);
@@ -46,11 +46,20 @@ int frames = 0;
 
 //Remap Polar Space
 float MAX_RANGE;
+float MAX_Z_TRNS;
 int RANGE_ROWS = 500;
-int RANGE_STEP;
-int SCALE_RANGE_ALT; //scale the alternative espace to match MAX_RANGE
-float DEPTH_SCALE = 0.7; // decide the scaling factor with respect to MAX_RANGE
-int KINECTS_DISPLACEMENT = 1400; 
+
+float DEPTH_SCALE = 1; // decide the scaling factor with respect to MAX_RANGE
+int KINECTS_DISPLACEMENT = 0; 
+
+//*IMPORTANT*//
+//THIS TWO VALUES SHOULD NOT BE CHANGED.
+//It will affect the amount of points projected in each pixel of the
+//remap polar space. The direct consecuence is that the thresholds used for
+//the detection will not be suitable.
+const int RANGE_STEP = 24; //ceil(11650.0/RANGE_ROWS); //THIS VALUES MUST BE FIXED
+const int SCALE_RANGE_ALT = 25896; //scale the alternative espace to match MAX_RANGE
+
 
 
 //Time interval checking
@@ -239,11 +248,11 @@ void updatePolarAlternateive(Mat* polarAlt, Mat* polar, mmFS& fs, const XnPoint3
 		XnPoint3D p = p3D[i];
 			
 		float range = sqrtf(pow(p.X,2) + pow(p.Z,2));
-		if (range > MAX_RANGE || p.Z > ActivityMap_Utils::MAX_Z  || p.Y > ActivityMap_Utils::CEILING_THRESHOLD || p.Y < ActivityMap_Utils::FLOOR_THRESHOLD)
+		if (range > MAX_RANGE || p.Z > ActivityMap_Utils::MAX_Z_TRANS  || p.Y > ActivityMap_Utils::CEILING_THRESHOLD || p.Y < ActivityMap_Utils::FLOOR_THRESHOLD)
 		{
 			if (debug > DEBUG_NONE)
 				outDebugFile << "UpdatePolarAlternative: 3D Point Rejectected. Info: 3DPoint: " << p.X <<", "<< p.Y << ", " << p.Z << 
-				". Range: " << range << ". MAX_RANGE: " << MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESHOLD: " <<
+				". Range: " << range << ". MAX_RANGE: " << MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESHOLD: " <<
 				ActivityMap_Utils::CEILING_THRESHOLD << ". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
 			continue; //TODO: ADD A LOG OUTPUT
 		}
@@ -326,7 +335,7 @@ void updateActivityMap(Mat& activityMap, Mat& activityMap_back, const ActivityMa
 		{
 			if (debug > DEBUG_NONE)
 				outDebugFile << "UpdateActivityMap: BAD PROJECTION (MoA). Info: 3DPoint: " << p3D[i].X <<", "<< p3D[i].Y << ", " << p3D[i].Z <<
-				"MAX_RANGE: " << MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
+				"MAX_RANGE: " << MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
 				". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
 		}
 	}
@@ -541,7 +550,7 @@ void detectCC(Mat& bw, list<Person>* people, mmFS& fs, Mat& debugImg)
 				if (rangeTmp > 2300)
 					thresh= 67900*exp((-0.0004)*rangeTmp); //low threshold
 				else
-					thresh = 15000;
+					thresh = 25000;
 				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
 				int w = bw.ptr<ushort>(p.y)[p.x];
 				if (w > thresh) //check that there is at least one pixel that get the higher threshold
@@ -555,7 +564,10 @@ void detectCC(Mat& bw, list<Person>* people, mmFS& fs, Mat& debugImg)
 			{
 				Person p;
 				p.mean = Point(x/ww, y/ww);
-				
+//				if (debug > DEBUG_NONE)
+//				{
+//					outHeights << "DETECTION AT: " << p.mean.x << ", " << p.mean.y << endl;
+//				}
 				for (int i = 0; i < b.size(); i++)
 				{
 					Point2i point = b[i];
@@ -585,7 +597,7 @@ void detectCC(Mat& bw, list<Person>* people, mmFS& fs, Mat& debugImg)
 						for (mmFS::iterator iter = ret.first; iter != ret.second; iter++)
 						{
 							Feature feat = iter->second;
-							if (debug == DEBUG_OUT && frames == debugFrame)
+							if (debug > DEBUG_NONE && frames == debugFrame)
 							{
 								outHeights << feat.height << endl;
 							}
@@ -733,7 +745,7 @@ void displayDetections(list<Person>& people, Mat& remapPolar, Mat& moa)
 			{
 				outDebugFile << "displayDetections: person located out of MoA range. INFO: RPS point: " << p.mean.x << ", " << p.mean.y <<
 					". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(p3D.X,2) + pow(p3D.Z,2)) <<". MAX_RANGE: " << 
-					MAX_RANGE << ". MAX_Z: " << ActivityMap_Utils::MAX_Z << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD << 
+					MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD << 
 					". FLOOR_THRESH: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
 			}
 
@@ -824,13 +836,10 @@ int main(int argc, char* argv[])
 
 	//Initialize resolutions MoA and Remap Polar space
 	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
-	float max_z_mt = ActivityMap_Utils::MAX_Z/1000;
-	float rangeVar = 2.6206*powf(max_z_mt,2)+ 0.6820*max_z_mt -0.2109; //Range at maximum depth in the remap polar space
-	MAX_RANGE = ActivityMap_Utils::MAX_Z/(cosf(KinectSensor::KINECT_HORIZ_FOV/2)) + rangeVar + KINECTS_DISPLACEMENT; 
-	//RANGE_STEP = ceil(MAX_RANGE/RANGE_ROWS);
-	//SCALE_RANGE_ALT = MAX_RANGE/(((0.33*logf(10+3*MAX_RANGE/1000))-0.80597));
-	RANGE_STEP = ceil(11650.0/RANGE_ROWS);
-	SCALE_RANGE_ALT = 25896;
+	//float max_z_mt = ActivityMap_Utils::MAX_Z/1000.0;
+	//float rangeVar = 2.6206*powf(max_z_mt,2)+ 0.6820*max_z_mt -0.2109; //Range at maximum depth in the remap polar space
+	//MAX_RANGE = ActivityMap_Utils::MAX_Z/(cosf(KinectSensor::KINECT_HORIZ_FOV/2)) + rangeVar + KINECTS_DISPLACEMENT; 
+
 
 	KinectSensor kinects[NUM_SENSORS];
 	const XnDepthPixel* depthMaps[NUM_SENSORS];
@@ -847,6 +856,15 @@ int main(int argc, char* argv[])
 		kinects[i].tilt(tilt);
 	}
 
+
+	KINECTS_DISPLACEMENT = max(abs(kinects[0].translation(0)), abs(kinects[2].translation(0))); //MAXIMUM TRANSLATION IN THE HORIZONTAL AXIS
+	MAX_RANGE = ActivityMap_Utils::MAX_Z_TRANS + KINECTS_DISPLACEMENT; 
+	
+	//RANGE_STEP = cei;
+	//SCALE_RANGE_ALT = MAX_RANGE/(((0.33*logf(10+3*MAX_RANGE/1000))-0.80597));
+
+
+
 	namedWindow(windMoA);
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
@@ -861,7 +879,7 @@ int main(int argc, char* argv[])
 	bool bShouldStop = false;
 	bool trans = true;
 	bool bgComplete = true;
-	bool deleteBG = false;
+	bool deleteBG = true;
 
 	Mat depthImages[NUM_SENSORS];
 	Mat rgbImages[NUM_SENSORS];
@@ -1010,8 +1028,8 @@ int main(int argc, char* argv[])
 					startTime_tmp = clock();
 					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
 					totalIntervals[PTRANS_ID] += clock() - startTime_tmp; //time debugging
+					
 					//Create alternative representation
-
 					startTime_tmp = clock();
 					updatePolarAlternateive(&polarAlt, &polar, fs, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i]);	
 					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
@@ -1141,7 +1159,8 @@ int main(int argc, char* argv[])
 			}
 		case 13: //enter
 			{
-				deleteBG = !deleteBG;
+				debugFrame = frames + 1;
+				//deleteBG = !deleteBG;
 				//if (waitTime == 0)
 				//	waitTime=1;
 				//else
