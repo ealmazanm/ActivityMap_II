@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include "XnCppWrapper.h"
 #include "connected_components.h"
+#include <vld.h>
 
 
 //debug levels
@@ -33,6 +34,9 @@ ofstream outPerson("c:\\Dropbox\\PhD\\Matlab\\PdF_person\\pdf_points.txt");
 ofstream outHeights("c:\\Dropbox\\PhD\\Matlab\\Height_People\\heights.txt");
 ofstream outPersModel ("c:\\Dropbox\\PhD\\Matlab\\Model\\modelInfo.txt");
 ofstream outBboxModel ("c:\\Dropbox\\PhD\\Matlab\\BBoxes\\bboxInfo.txt");
+ofstream outFPK0 ("C:\\Dropbox\\PhD\\Matlab\\Calibration_wks\\kinect0_full.txt");
+ofstream outFPK1 ("C:\\Dropbox\\PhD\\Matlab\\Calibration_wks\\kinect1_full.txt");
+ofstream outFPK2 ("C:\\Dropbox\\PhD\\Matlab\\Calibration_wks\\kinect2_full.txt");
 int debugFrame = -1;
 
 vector<vector<float>> peopleRange;
@@ -88,6 +92,16 @@ const int UPDATE_ID = 2;
 const int FEATURE_ID = 3;
 char* titles_subRPS[TOTAL_SUBINTERVAL_RPS] = {"ANGLE", "RANGE", "UPDATE", "FEATURE"};
 float totalSubIntervalsRPS[TOTAL_SUBINTERVAL_RPS] = {0,0,0,0};
+
+//Time interval sub-function Create Activity Map
+const int TOTAL_SUBINTERVAL_MOA = 4;
+const int CONVERT2PONITS_ID = 0;
+const int ARRAYBACKPROJECT_ID = 1;
+const int TRANSFORM_ID = 2;
+const int FINDMOA_ID = 3;
+char* titles_subMOA[TOTAL_SUBINTERVAL_MOA] = {"CONVERT 2 POINTS", "ARRAY BACKPROJECT", "TRANSFORM", "FINDMOA_ID"};
+float totalSubIntervalsMOA[TOTAL_SUBINTERVAL_MOA] = {0,0,0,0};
+
 
 //PERSON MODEL SETTINGS
 const int MODEL_MAX_HEIGHT = 300;
@@ -372,7 +386,7 @@ void updatePolarAlternateive(Mat* polarAlt, Mat* polar, PointMapping* pntsMap, i
 		int yPos = RANGE_ROWS - ((int)range_Alt/RANGE_STEP);	
 		if (yPos < 0 || yPos >= RANGE_ROWS)
 		{
-			if (debug > DEBUG_NONE)
+			if (debug >= DEBUG_NONE)
 				outDebugFile << "UpdatePolarAlternative: BAD REMAPING (Remap Polar Space). Info: 3DPoint: " << X <<", "<< Y << ", " << Z << ". PolarPoint: " <<
 					 range <<", "<< angle << ". RemapPolarPoint: " << range_Alt << ". RmapPolarPlanview: " << angle << ", " << yPos <<
 					 ". SCALE_RANGE_ALT: " << SCALE_RANGE_ALT << ". RANGE_ROWS: " << RANGE_ROWS << ". RANGE_STEP: " << RANGE_STEP << endl;
@@ -397,12 +411,12 @@ void updatePolarAlternateive(Mat* polarAlt, Mat* polar, PointMapping* pntsMap, i
 		totalSubIntervalsRPS[FEATURE_ID] += clock() - startTime; //time debugging
 
 
-		if (debug > DEBUG_NONE)
+		if (debug >= DEBUG_MED)
 		{
 			yPos = RANGE_ROWS - ((int)range/RANGE_STEP);
 			if (yPos < 0 || yPos >= RANGE_ROWS)
 			{
-				if (debug > DEBUG_NONE)
+				if (debug >= DEBUG_NONE)
 					outDebugFile << "UpdatePolarAlternative: BAD REMAPING (Polar Space). Info: 3DPoint: " << X <<", "<< Y << ", " << Z << ". PolarPoint: " <<
 						 range <<", "<< angle << ". RANGE_ROWS: " << RANGE_ROWS << ". RANGE_STEP: " << RANGE_STEP << endl;
 				continue;
@@ -656,27 +670,28 @@ void initPerson(Person* p)
 {
 	//first iteration the measruemente is trusted 100%
 	float valsR[] = {0,0,0,0};
+	Mat m = Mat(2,2, CV_32F, valsR);
+	m.copyTo(p->R);
 	//Covariance of the prediction error
 	//first iteration the prediction model is trusted 0%
 	float valsQ[] = {1,0,0,0,   0,1,0,0,  0,0,1,0,  0,0,0,1};
+	m = Mat(4,4, CV_32F, valsQ);
+	m.copyTo(p->Q);
 	//Prediction linear model
 	float valsA[] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1};
+	m = Mat(4,4, CV_32F, valsA);
+	m.copyTo(p->A);
+		
+	p->stateMoA = Mat::zeros(4,1,CV_32F);
+	p->covMoA = Mat::zeros(4,4, CV_32F);
+	p->gtArea = Mat::zeros(2,2, CV_32F);
+	p->control = DTC_FULL;
+	p->lost = 0;
+	p->associated = false;
 
 	for (int i = 0; i < MODEL_NBINS; i++)
-	{
-		p->R = Mat(2,2, CV_32F, valsR);
-		p->Q = Mat(4,4, CV_32F, valsQ);
-		p->A = Mat(4,4, CV_32F, valsA);
-		p->stateMoA = Mat::zeros(4,1,CV_32F);
-		p->covMoA = Mat::zeros(4,4, CV_32F);
-		p->gtArea = Mat::zeros(2,2, CV_32F);
-
-
 		p->heightModel[i] = 0;
-		p->control = DTC_FULL;
-		p->lost = 0;
-		p->associated = false;
-	}
+
 }
 
 
@@ -689,7 +704,7 @@ void createModel(int rpX, int rpY, const PointMapping* pntsMap, int ttlPnts, Per
 		{
 			float height = pMap->p3D->Y;
 			const XnRGB24Pixel* colour = pMap->colour;
-			if (debug > DEBUG_NONE && frames == debugFrame)
+			if (debug == DEBUG_HIGH && frames == debugFrame)
 				outHeights << height << endl;
 
 			if (height < MODEL_MAX_HEIGHT && height > MODEL_MIN_HEIGHT)
@@ -713,10 +728,9 @@ void createModel(int rpX, int rpY, const PointMapping* pntsMap, int ttlPnts, Per
 					p->colourModel[bin] = Scalar(colour->nRed, colour->nGreen, colour->nBlue);
 
 				p->heightModel[bin]++;
-				if (debug > DEBUG_MED && frames == debugFrame && p->id == 0)
-				{
+				if (debug == DEBUG_HIGH && frames == debugFrame && p->id == 0)
 					outPersModel << height << " " << (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
-				}
+				
 
 			}
 			else
@@ -830,7 +844,174 @@ Perform a connected component labeling on the remap polar coordinate space.
 
 bw: Mat(500,181, CV_16UC1);
 */
-void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int ttlPnts, Mat& debugImg)
+//void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int ttlPnts, Mat& debugImg)
+//{
+//
+//	Mat imgCpy = Mat(bw.size(), CV_8UC1);
+//	Mat cpy = Mat(bw.size(), CV_8UC1);
+//	convert16to8(&bw, imgCpy); //convert the image to a range between 0-255. And also inverts the values, so 0 belongs to high values in viceversa
+//
+//	//Create a binary image
+//	threshold(imgCpy, cpy, 254, 1, THRESH_BINARY); //backround = 1, foreground = 0;
+//
+//	//find connected components
+//	std::vector < std::vector<cv::Point2i > > blobs;
+//	findBlobs(cpy, blobs);
+//
+//	//for each region calculate mean and covariance
+//	vector<vector<Point2i>>::iterator iter = blobs.begin();
+//	float x, y, xx, yy, ww;
+//	float range,alpha, rr, aa;
+//
+//	ushort* bw_data =(ushort*) bw.data;
+//	int bw_step = bw.step/sizeof(ushort);
+//	int bw_cols = bw.cols;
+//
+//	int idPers = 0;
+//	while (iter != blobs.end())
+//	{
+//		bool pass = false;
+//		vector<Point2i> b = *iter;
+//		//if (b.size() > 10) //rejection of small regions
+//		{
+//			x = y = xx = yy = ww = 0;
+//			int maxI = b.size();
+//			for (int i = 0; i < maxI; i++)
+//			{
+//				Point2i p = b[i];
+//					
+//				float rangeTmp = (bw.rows-p.y)*RANGE_STEP; //binSize
+//				float thresh;
+//				if (rangeTmp > 4000)
+//					//thresh= 67900*exp((-0.00044)*rangeTmp); //low threshold
+//					thresh = -0.6*rangeTmp+7000;
+//					//thresh= 55000*exp((-0.00048)*rangeTmp); //low threshold
+//				else
+//					thresh = -5*rangeTmp+25000;
+//				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
+//	
+//				int w = (bw_data + p.y*bw_step)[p.x];
+//				if (w > thresh) //check that there is at least one pixel that get the higher threshold
+//						pass = true;
+//
+//				x += (p.x*w);
+//				y += (p.y*w);
+//				ww += w;
+//			}
+//			if (pass)
+//			{
+//				Person* prs = new Person();
+//				initPerson(prs);
+//				prs->mean_RPS = Point(x/ww, y/ww);
+//				prs->id = idPers++;
+//				for (int i = 0; i < maxI; i++)
+//				{
+//					int rpX = b[i].x;
+//					int rpY = b[i].y;
+//					//debug 
+//					if (debug > DEBUG_MED)//ONLY points that surpass the higher threshold are drawn in yellow
+//					{
+//						debugImg.ptr<uchar>(rpY)[rpX*3] = 0;
+//						debugImg.ptr<uchar>(rpY)[rpX*3+1] = 255;
+//						debugImg.ptr<uchar>(rpY)[rpX*3+2] = 255;
+//					}
+//										int w = (bw_data + rpY*bw_step)[rpX];				
+//					xx += w*powf(rpX-prs->mean_RPS.x,2);
+//					yy += w*powf(rpY-prs->mean_RPS.y,2);
+//
+//					//UPDDATE THE MODEL
+//					createModel(rpX, rpY, pntsMap, ttlPnts, prs);
+//					//look for points in pntsMap with point coordinates
+//
+//				}
+//				prs->sigmaY_RPS = sqrtf(yy/ww);
+//				prs->sigmaX_RPS = sqrtf(xx/ww);
+//
+//				projectLocation2MoA(prs);
+//
+//				//normalizeHeightModel(prs.heightModel);
+//				dtctPpl[ttl_dtctPpl++] = prs;
+//				if (frames == debugFrame && prs->id == 0)
+//				{
+//					outDebugFile << "Colour model at frame " << frames << endl;
+//					for (int k = 0; k < MODEL_NBINS; k++)
+//					{
+//						outDebugFile << (float)prs->heightModel[k] << " " << (int)prs->colourModel[k](0) << " " << (int)prs->colourModel[k](1) << " " << (int)prs->colourModel[k](2) << endl;
+//					}
+//				}
+//			}
+//		}
+//		iter++;
+//	}
+//}
+
+
+bool belong(const Person* p, int x, int y)
+{
+	float val = powf((x-p->mean_RPS.x),2)/powf(p->sigmaX_RPS,2) + powf((y - p->mean_RPS.y),2)/powf(p->sigmaY_RPS,2);
+	return val <= 1;
+}
+
+
+void buildAppearanceModels(Person** dtctPpl, int ttl_dtctPpl, const PointMapping* pntsMap, int ttlPnts)
+{
+	for (int i = 0; i < ttlPnts; i++)
+	{
+		PointMapping pntMap = pntsMap[i];
+		bool found = false;
+		int c = 0;
+		Person* prs = NULL;
+		while (c < ttl_dtctPpl && !found)
+		{
+			prs = dtctPpl[c];
+			found = belong(prs, pntMap.rpX, pntMap.rpY);
+			c++;
+		}
+		if (found && prs != NULL)
+		{
+			//update the appearance model
+			float height = pntMap.p3D->Y;
+			const XnRGB24Pixel* colour = pntMap.colour;
+			if (debug > DEBUG_NONE && frames == debugFrame)
+				outHeights << height << endl;
+
+			if (height < MODEL_MAX_HEIGHT && height > MODEL_MIN_HEIGHT)
+			{
+				int bin = (MODEL_MAX_HEIGHT - height)/MODEL_BINRANGE;
+								
+				Scalar* modelBinColour = prs->colourModel + bin;
+
+				int numBinPnts = prs->heightModel[bin];
+								
+				//update the model (height, colour)
+				if (numBinPnts > 0)	
+				{
+					(*modelBinColour)(0) = (colour->nRed + numBinPnts * (*modelBinColour)(0))/(numBinPnts+1);
+					(*modelBinColour)(1) = (colour->nGreen + numBinPnts * (*modelBinColour)(1))/(numBinPnts+1);
+					(*modelBinColour)(2) = (colour->nBlue + numBinPnts * (*modelBinColour)(2))/(numBinPnts+1);
+				}
+				else
+					prs->colourModel[bin] = Scalar(colour->nRed, colour->nGreen, colour->nBlue);
+
+				prs->heightModel[bin]++;
+				if (debug > DEBUG_MED && frames == debugFrame && prs->id == 0)
+				{
+					outPersModel << height << " " << (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
+				}
+
+			}
+			else
+			{
+				outDebugFile << "DetectCC: Person point out of height range: Info: RPS coordinates: " << pntMap.rpX << ", " << pntMap.rpY <<
+					". Height: " << height << ". MAX_HEIGHT: " << MODEL_MAX_HEIGHT << ". MIN_HEIGHT: " << MODEL_MIN_HEIGHT << ". Colour: " 
+					<< colour->nRed << ", " << colour->nGreen << ", " << colour->nBlue << endl;
+			}
+		}
+	}
+
+}
+
+void detectCC(Mat& bw, Person* dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int ttlPnts, Mat& debugImg)
 {
 
 	Mat imgCpy = Mat(bw.size(), CV_8UC1);
@@ -868,12 +1049,19 @@ void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* p
 					
 				float rangeTmp = (bw.rows-p.y)*RANGE_STEP; //binSize
 				float thresh;
-				if (rangeTmp > 4000)
-					//thresh= 67900*exp((-0.00044)*rangeTmp); //low threshold
-					thresh = -0.6*rangeTmp+7000;
-					//thresh= 55000*exp((-0.00048)*rangeTmp); //low threshold
+				if (rangeTmp > 4333)
+					thresh = -0.46*rangeTmp+5500;
+				else if (rangeTmp <= 4333 && rangeTmp > 3750)
+					thresh = -2*rangeTmp + 14000;
 				else
-					thresh = -5*rangeTmp+25000;
+					thresh = 0.6*rangeTmp+5500;
+
+				//if (rangeTmp > 4000)
+				//	//thresh= 67900*exp((-0.00044)*rangeTmp); //low threshold
+				//	thresh = -0.6*rangeTmp+7000;
+				//	//thresh= 55000*exp((-0.00048)*rangeTmp); //low threshold
+				//else
+				//	thresh = -5*rangeTmp+25000;
 				//float thresh = 68103*exp((-0.000446)*rangeTmp); //low threshold
 	
 				int w = (bw_data + p.y*bw_step)[p.x];
@@ -886,7 +1074,7 @@ void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* p
 			}
 			if (pass)
 			{
-				Person* prs = new Person();
+				Person* prs = &dtctPpl[ttl_dtctPpl++];
 				initPerson(prs);
 				prs->mean_RPS = Point(x/ww, y/ww);
 				prs->id = idPers++;
@@ -901,23 +1089,15 @@ void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* p
 						debugImg.ptr<uchar>(rpY)[rpX*3+1] = 255;
 						debugImg.ptr<uchar>(rpY)[rpX*3+2] = 255;
 					}
-
 					int w = (bw_data + rpY*bw_step)[rpX];				
 					xx += w*powf(rpX-prs->mean_RPS.x,2);
 					yy += w*powf(rpY-prs->mean_RPS.y,2);
-
-					//UPDDATE THE MODEL
-					createModel(rpX, rpY, pntsMap, ttlPnts, prs);
-					//look for points in pntsMap with point coordinates
-
 				}
 				prs->sigmaY_RPS = sqrtf(yy/ww);
 				prs->sigmaX_RPS = sqrtf(xx/ww);
 
 				projectLocation2MoA(prs);
 
-				//normalizeHeightModel(prs.heightModel);
-				dtctPpl[ttl_dtctPpl++] = prs;
 				if (frames == debugFrame && prs->id == 0)
 				{
 					outDebugFile << "Colour model at frame " << frames << endl;
@@ -930,7 +1110,13 @@ void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* p
 		}
 		iter++;
 	}
+
+	//create appearance model
+	//buildAppearanceModels(dtctPpl, ttl_dtctPpl,  pntsMap,  ttlPnts);
+
 }
+
+
 
 
 
@@ -938,7 +1124,7 @@ void detectCC(Mat& bw, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* p
 img : Mat(500,181, CV_16UC1)
 
 */
-void ccDetection(Mat& img, Person** dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int& ttlPnts)
+void ccDetection(Mat& img, Person* dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int& ttlPnts)
 {
 	Mat imgCpy1, imgCpy2;
 	img.copyTo(imgCpy1);
@@ -960,10 +1146,23 @@ void ccDetection(Mat& img, Person** dtctPpl, int& ttl_dtctPpl, const PointMappin
 			
 			//linearize version of the threshold
 			float thresh;
-			if (range < 3000)
+			if (range > 4333)
+				thresh = -0.46*range+4500;
+			else if (range > 3750 && range <= 4333)
+			{
+				thresh = -2*range+12500;
+			}
+			//else //if (range > 2000 && range <= 3650)
+			//{
+			//	thresh = -4.8*range+23000;
+			//}
+			else
+				thresh = 0.6*range + 4000;
+			
+			/*if (range < 3000)
 				thresh = -5*range+20000;
 			else
-				thresh = -0.73*range+6000;
+				thresh = -0.73*range+6000;*/
 
 			//float thresh = 50000*exp((-0.0006)*range); //low threshold
 			if (val < thresh)
@@ -973,7 +1172,7 @@ void ccDetection(Mat& img, Person** dtctPpl, int& ttl_dtctPpl, const PointMappin
 	img.copyTo(imgCpy2);
 	
 	Mat outDebug = Mat(RANGE_ROWS, 181, CV_8UC3);	
-	if (debug > DEBUG_MED)
+	if (debug >= DEBUG_MED)
 	{
 		//Show the results after first thresholding
 		
@@ -1002,17 +1201,39 @@ void ccDetection(Mat& img, Person** dtctPpl, int& ttl_dtctPpl, const PointMappin
 		}
 	}
 	detectCC(img, dtctPpl, ttl_dtctPpl, pntsMap, ttlPnts, outDebug);
-	if (debug > DEBUG_MED)
+	if (debug >= DEBUG_MED)
 	{
+		//Show the change points in the thresholds
+		int rowLow = RANGE_ROWS - ((int)3750/RANGE_STEP);	
+		line(outDebug, Point(0,rowLow), Point(RANGE_COLS, rowLow), Scalar(0,0,255));
 		imshow("Thresholds", outDebug);	
 	}
 }
 
-void displayDetections(Person** trckPpl, int ttl_trckPpl, Mat& remapPolar, Mat& moa)
+Point findNearestPoint(Point pnt, Person* ppl, int ttlPpl)
+{
+	Point out = Point (0,0);
+	bool found = false;
+	int i = 0;
+	while (i < ttlPpl && !found)
+	{
+		int X = ppl[i].stateMoA.at<float>(0,0);
+		int Y = ppl[i].stateMoA.at<float>(1,0);
+		out.x = X-pnt.x;
+		out.y = Y-pnt.y;
+		float dist = sqrtf(powf(out.x,2) + powf(out.y,2));
+		found = (dist < 40);
+		//cout << "distance: " << dist << endl;	
+		i++;
+	}
+	return out;
+}
+
+void displayDetections(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar, Person* pastPpl, int ttlPastppl, Mat& moa)
 {
 	for (int iter = 0; iter < ttl_trckPpl; iter++)
 	{
-		const Person* p = trckPpl[iter];
+		const Person* p = &(trckPpl[iter]);
 		if (p->lost == 0)
 		{
 			if (debug > DEBUG_NONE)
@@ -1033,18 +1254,37 @@ void displayDetections(Person** trckPpl, int ttl_trckPpl, Mat& remapPolar, Mat& 
 			else if (area > 800)
 				color = Scalar(0,0,255);
 
-			cv::ellipse(moa, meanMoA, Size(sgY, sgX), -p->mean_RPS.x, 0, 360, color);
+			int bigAxis = 20*DEPTH_SCALE;
+			int smallAxis = 10*DEPTH_SCALE;
 
-			char txt[15];
-			itoa(p->id, txt, 10);
-			putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.7, Scalar(0,0,0));
-
-			if (debug > DEBUG_MED)
+			Point vel = findNearestPoint(meanMoA, pastPpl, ttlPastppl); 
+			float angle = 0;
+			if (vel.x != 0 && vel.y != 0)
 			{
-				float sgGtX = sqrtf(p->gtArea.at<float>(0,0));
-				float sgGtY = sqrtf(p->gtArea.at<float>(1,1));
-				cv::ellipse(moa, meanMoA, Size(sgGtY, sgGtX), -p->mean_RPS.x, 0, 360, color);
+				if ((vel.x > 0 && vel.y > 0) || (vel.x < 0 && vel.y < 0))
+				{
+					angle = 90 + ((atanf(vel.y/vel.x))*180/CV_PI);
+				}
+				else
+				{
+					angle = 90 - ((atanf(vel.y/vel.x))*180/CV_PI);
+				}
 			}
+
+			//cv::ellipse(moa, meanMoA, Size(bigAxis, smallAxis), -p->mean_RPS.x, 0, 360, color,-1);
+			cv::ellipse(moa, meanMoA, Size(bigAxis, smallAxis), -angle, 0, 360, color,-1);
+			cv::circle(moa, meanMoA, 0.8*smallAxis, Scalar(0,0,0), -1);
+
+			//char txt[15];
+			//itoa(p->id, txt, 10);
+			//putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.7, Scalar(0,0,0));
+
+			//if (debug > DEBUG_MED)
+			//{
+			//	float sgGtX = sqrtf(p->gtArea.at<float>(0,0));
+			//	float sgGtY = sqrtf(p->gtArea.at<float>(1,1));
+			//	cv::ellipse(moa, meanMoA, Size(sgGtY, sgGtX), -p->mean_RPS.x, 0, 360, Scalar(100,100,100));
+			//}
 
 				//BEGIN Options from the Polar space
 
@@ -1100,12 +1340,28 @@ void look4MergeSplits(Person** dtctPpl, int ttl_dtctPpl)
 /*
 Predict the state and covariance of the position 
 */
-void predictState(Person* p)
+void predictState(Person*& p)
 {
 	p->stateMoA = p->A * p->stateMoA;
 
+	if (debug == DEBUG_HIGH)
+	{
+		outDebugFile << "PREDICT STATE (COVARIANCE UPDATE)" << endl;
+		printValuesF(&p->covMoA, "Covariance matrix (before prediction)", outDebugFile);
+		printValuesF(&p->A, "Prediction model (A)", outDebugFile);
+		printValuesF(&p->Q, "Error prediction cov (Q)", outDebugFile);
+	}
+
 	//CovMoA is the covariance projected from the detection
 	p->covMoA = p->Q + p->A * p->covMoA * p->A.t();
+
+	if (debug == DEBUG_HIGH)
+	{
+		printValuesF(&p->covMoA, "Covariance matrix (after prediction)", outDebugFile);
+		outDebugFile << "-----------------------------------" << endl;
+	}
+
+
 }
 
 
@@ -1123,19 +1379,6 @@ float mahalanobis(const Person* target, const Person* dPrs)
 	Mat tgtCov = target->covMoA(Rect(0,0,2,2));
 	Mat dtcCov = dPrs->covMoA(Rect(0,0,2,2));
 	Mat avgCov = (tgtCov + dtcCov)/2;
-
-	if (debug > DEBUG_MED)
-	{
-		printValuesF(&target->stateMoA, "Target state", outDebugFile);
-		printValuesF(&dPrs->stateMoA, "Detected state", outDebugFile);
-		printValuesF(&tgtMean, "Target mean" , outDebugFile);
-		printValuesF(&dtcMean, "Detected mean", outDebugFile);
-		printValuesF(&meanDiff, "Diff means", outDebugFile);
-
-		printValuesF(&target->covMoA, "Target cov", outDebugFile);
-		printValuesF(&dPrs->covMoA, "Detected cov", outDebugFile);
-		printValuesF(&avgCov, "Average Cov", outDebugFile);
-	}
 
 	Mat out = meanDiff.t() * avgCov.inv() * meanDiff;
 
@@ -1279,20 +1522,25 @@ Update the target state (x,y,vx,vy) from the measurement state through the kalma
 */
 void updateState(Person* trgt, const Person* msr, float dComp)
 {
+	//K = 4x2 matrix
 	//Biggest R entails smallest K and viceversa
-	Mat K = trgt->covMoA * H.t() * (H * trgt->covMoA * H.t() + trgt->R);
+	Mat K = trgt->covMoA * H.t() * (H * trgt->covMoA * H.t() + trgt->R).inv();
 
 	//2x1 location of measurement
 	Mat msreState = msr->stateMoA(Rect(0,0,1,2));
-	trgt->stateMoA = trgt->stateMoA + K*(msreState - H*trgt->stateMoA);
-
 	//2x1 location of the target
 	Mat trgtState = trgt->stateMoA(Rect(0,0,1,2));
-	Mat vel = msreState - trgtState;
+	//UPDATE EQUATION
+	Mat updatedState = trgt->stateMoA + K*(msreState - H*trgt->stateMoA);
+	
+	//2x1 location of the estimation
+	Mat estimatedLoc = updatedState(Rect(0,0,1,2));
+	Mat vel = estimatedLoc - trgtState;
+	updatedState.copyTo(trgt->stateMoA);
+	
 	//Update motion model
 	trgt->stateMoA.at<float>(2,0) = vel.at<float>(0,0);
 	trgt->stateMoA.at<float>(3,0) = vel.at<float>(1,0);
-
 
 	trgt->lost = 0;
 	//update the covariance of the measurement error
@@ -1304,10 +1552,25 @@ void updateState(Person* trgt, const Person* msr, float dComp)
 	trgt->Q.at<float>(2,2) = 1-dComp;
 	trgt->Q.at<float>(3,3) = 1-dComp;
 
+	//update the covariance 
+	Mat I = Mat::eye(4,4,CV_32F);
+	Mat cov = (I - (K*H))*trgt->covMoA;
 
+	if (debug > DEBUG_MED)
+	{
+		outDebugFile << "UPDATE STATE" << endl;
+		printValuesF(&I, "Identity matrix", outDebugFile);
+		printValuesF(&K, "K", outDebugFile);
+		printValuesF(&H, "H", outDebugFile);
+		printValuesF(&trgt->covMoA, "Covariance Matrix", outDebugFile); 
+		printValuesF(&cov, "Covariance Matrix (Updated)", outDebugFile); 
+	}
 
+	cov.copyTo(trgt->covMoA);
 
-
+	//update the gating area
+	Mat spaceCov = trgt->covMoA(Rect(0,0, 2,2))*4;
+	spaceCov.copyTo(trgt->gtArea);
 }
 
 
@@ -1346,13 +1609,17 @@ void checkEnd_NewTracks(Person**& trckPpl, int& ttl_trckPpl, Person**& dtctPpl, 
 {
 	Person** out = new Person*[ttl_trckPpl+ttl_dtctPpl];
 	int cont = 0;
-
+	int maxId = -1;
 	//look for end tracks
 	for (int i = 0; i < ttl_trckPpl; i++)
 	{
 		Person* trck = trckPpl[i];
 		if (trck->lost < TRACKLOST_THRESHOLD)
+		{
 			out[cont++] = trck;
+			if (trck->id > maxId)
+				maxId = trck->id;
+		}
 		else
 			delete trck; //free memory
 	}
@@ -1362,7 +1629,10 @@ void checkEnd_NewTracks(Person**& trckPpl, int& ttl_trckPpl, Person**& dtctPpl, 
 	{
 		Person* dtc = dtctPpl[i];
 		if (!dtc->associated && dtc->control == DTC_FULL)
+		{
+			dtc->id = maxId + 1;
 			out[cont++] = dtc;
+		}
 		else
 			delete dtc;
 	}
@@ -1381,10 +1651,12 @@ void tracking(Person**& trckPpl, int& ttl_trckPpl, Person**& dtctPpl, int& ttl_d
 	for (int i = 0; i < ttl_trckPpl; i++)
 	{
 		Person* target = trckPpl[i];
+
 		//Instead of removing the lost tracks from the list trckPpl (require the realocation of the rest of tracks)
 		//It uses a flag to check if the target is lost
 		if (target->lost <= TRACKLOST_THRESHOLD)
 		{
+			
 			//Predict the state of the target using the motion model.
 			predictState(target);
 
@@ -1395,13 +1667,14 @@ void tracking(Person**& trckPpl, int& ttl_trckPpl, Person**& dtctPpl, int& ttl_d
 
 			if (measur != NULL)
 			{
+				measur->associated = true;
 				//Update the position of the target using the Kalman equations.
 				updateState(target, measur, compDist);
 
 				//Only updates the height and colour model when it is "certain" that
 				//the candidate corresponds to the target. Also it needs to be fully detected (not splits or merges)
-				if (debug > DEBUG_MED)
-					outDebugFile << "Comparison coefficient: " << compDist << ". COMPARISON THRESHOLD: " << COMP_THRESHOLD << endl;
+//				if (debug > DEBUG_MED)
+//					outDebugFile << "Comparison coefficient: " << compDist << ". COMPARISON THRESHOLD: " << COMP_THRESHOLD << endl;
 
 				if (compDist < COMP_THRESHOLD && measur->control == DTC_FULL)
 					updateModel(target, measur);	
@@ -1414,6 +1687,24 @@ void tracking(Person**& trckPpl, int& ttl_trckPpl, Person**& dtctPpl, int& ttl_d
 	checkEnd_NewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
 }
 
+void printPerson(const Person* p)
+{
+	outDebugFile << "********** Track id: " << p->id;
+	printValuesF(&p->stateMoA, "State MoA", outDebugFile);
+	printValuesF(&p->covMoA, "Cov MoA", outDebugFile);
+	printValuesF(&p->gtArea, "Gating area" , outDebugFile);
+	printValuesF(&p->A , "Prediction model (A)", outDebugFile);
+	printValuesF(&p->Q, "Prediction error covariance (Q)", outDebugFile);
+	printValuesF(&p->R, "Measurement error covariance (R)", outDebugFile);
+	outDebugFile << "Lost: " << p->lost << ". Lost threshold: " << TRACKLOST_THRESHOLD << endl;
+	outDebugFile << "*****************************************" << endl;
+}
+
+
+void copyPerson(Person& dst, const Person* src)
+{
+	src->stateMoA.copyTo(dst.stateMoA);
+}
 
 
 /*
@@ -1422,27 +1713,44 @@ Arg 2: 0:No Record; 1:Record
 */
 int main(int argc, char* argv[])
 {
-
 	bool saved = false;
 	int fromVideo = 1;
-	int recordOut = 1;
+	int recordOut = 0;
 	int tilt = 0;
 	tiltTXT >> tilt;
 	cout << "Start" << endl;
-	if (argc ==3)
+	if (argc ==4)
 	{
 		sscanf(argv[1], "%d", &fromVideo);
 		sscanf(argv[2], "%d", &recordOut);
+		sscanf(argv[3], "%d", &debug);
 	}
 
-	char* paths[3];
-	/*paths[0] = "d:/Emilio/Tracking/DataSet/kinect0_calib.oni";
-	paths[1] = "d:/Emilio/Tracking/DataSet/kinect1_calib.oni";
-	paths[2] = "d:/Emilio/Tracking/DataSet/kinect2_calib.oni";*/
+	cout << "Tilt: " << tilt;
+	if (fromVideo)
+		cout << ". Live execution";
+	else
+		cout << ". Video execution";
 
-	paths[0] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect0_calib.oni";
+	if (!recordOut)
+		cout << ". No record" << endl;
+	else
+		cout << ". Record" << endl;
+	if (debug == DEBUG_NONE)
+		cout << ". Debug none" << endl;
+	else if (debug == DEBUG_LOW)
+		cout << ". Debug low" << endl;
+	else if (debug == DEBUG_HIGH)
+		cout << ". Debug high" << endl;
+
+	char* paths[3];
+	paths[0] = "d:/Emilio/Tracking/DataSet/kinect0_calib.oni";
+	paths[1] = "d:/Emilio/Tracking/DataSet/kinect1_calib.oni";
+	paths[2] = "d:/Emilio/Tracking/DataSet/kinect2_calib.oni";
+
+	/*paths[0] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect0_calib.oni";
 	paths[1] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect1_calib.oni";
-	paths[2] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect2_calib.oni";
+	paths[2] = "d:/Emilio/Tracking/DataSet/Dset2_workshop/kinect2_calib.oni";*/
 
 	//Initialize resolutions MoA and Remap Polar space
 	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
@@ -1475,7 +1783,7 @@ int main(int argc, char* argv[])
 
 
 
-	namedWindow(windMoA);
+	//namedWindow(windMoA);
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
 	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
@@ -1484,7 +1792,7 @@ int main(int argc, char* argv[])
 	//flags
 	bool bShouldStop = false;
 	bool trans = true;
-	bool bgComplete = true;
+	bool bgComplete = false;
 	bool deleteBG = false;
 
 	Mat depthImages[NUM_SENSORS];
@@ -1539,7 +1847,7 @@ int main(int argc, char* argv[])
 		w1.open("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	}	
 
-	namedWindow(windPolarName);
+	//namedWindow(windPolarName);
 	cvSetMouseCallback(windPolarName, selectROI_callBack, (Mat*)&polar_);
 	cvSetMouseCallback(windPolarName, selectPoint_callBack, (Mat*)&polar_);
 
@@ -1547,17 +1855,21 @@ int main(int argc, char* argv[])
 	Mat kernel = Mat::ones(Size(5,27), CV_32F);
 
 	//list<Person> people;
-	Person** dtctPpl = new Person*[MAX_PEOPLE];
+	Person* dtctPpl = new Person[MAX_PEOPLE];
 	int ttl_dtctPpl = 0;
 	Person** trckPpl;
 	int ttl_trckPpl = 0;
+	//for detection to estimate the orientation of the ellipse
+	Person* pastPpl = new Person[MAX_PEOPLE];
+	int ttlPastPpl = 0;
+
 
 
 	clock_t startTime = clock();
 	clock_t startTotalTime = clock();
 	clock_t startTime_tmp;
 	int nPoints = 0;
-	while (!bShouldStop && frames < 850)
+	while (!bShouldStop)
 	{		
 		if (debug != DEBUG_NONE)
 		{
@@ -1615,7 +1927,7 @@ int main(int argc, char* argv[])
 				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
 				totalIntervals[BSUB_ID] += clock() - startTime_tmp; //time debugging
 				nPoints += numberOfForegroundPoints[i];
-				if (debug > DEBUG_LOW)//Draw the output of the foreground detection
+				if (debug >= DEBUG_MED)//Draw the output of the foreground detection
 				{
 					if (frames == debugFrame && i == 1)
 						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Orig.jpg", rgbImages[1]);
@@ -1640,8 +1952,28 @@ int main(int argc, char* argv[])
 				for (int i = 0; i < NUM_SENSORS; i++)
 				{
 					startTime_tmp = clock();
-					points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
+					points3D[i] = new XnPoint3D[numberOfForegroundPoints[i]];
+					//points3D[i] = kinects[i].arrayBackProject(pointsFore2D[i], numberOfForegroundPoints[i]);
+					kinects[i].arrayBackProject(pointsFore2D[i], points3D[i], numberOfForegroundPoints[i]);
 					totalIntervals[BACKPR_ID] += clock() - startTime_tmp; //time debugging
+
+					if (debug == DEBUG_HIGH && frames == debugFrame)
+					{
+						int total = numberOfForegroundPoints[i];
+						ofstream* out;
+						if (i == 0)
+							out = &outFPK0;
+						else if (i == 1)
+							out = &outFPK1;
+						else
+							out = &outFPK2;
+
+						for (int j = 0; j < total; j++)
+						{
+							*out << (float)points3D[i][j].X << " " << (float)points3D[i][j].Y << " " << (float)points3D[i][j].Z << endl; 
+							
+						}
+					}
 
 					startTime_tmp = clock();
 					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
@@ -1655,23 +1987,24 @@ int main(int argc, char* argv[])
 					//startTime_tmp = clock();
 					//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
 					//totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
+					delete []points3D[i];
 				}
 		
 				//Todo: Create a method detection(polarAlt, moAPeople)
 				startTime_tmp = clock();
-				filter2D(polarAlt, polarAlt_smooth, -1, kernel);
+				cv::filter2D(polarAlt, polarAlt_smooth, -1, kernel);
 				totalIntervals[SMOOTH_ID] += clock() - startTime_tmp; //time debugging
 
 				startTime_tmp = clock();
 				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap, ttlPnts); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
 
-				if (debug > DEBUG_MED)
+				if (debug == DEBUG_HIGH)
 				{
 					//print bounding box areas					
 					for (int i = 0; i < ttl_dtctPpl; i++)
 					{
-						Person* p = dtctPpl[i];
+						const Person* p = &(dtctPpl[i]);
 						float sgX = p->covMoA.at<float>(0,0);
 						float sgY = p->covMoA.at<float>(1,1);
 						outBboxModel << sgX*sgY << endl;
@@ -1684,15 +2017,23 @@ int main(int argc, char* argv[])
 					}
 
 				}
-				if (ttl_dtctPpl == 1)
-					cout << "hey dude" << endl;
 
-				startTime_tmp = clock();
-				tracking(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
-				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
-				
+				//startTime_tmp = clock();
+				//tracking(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+				//totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
+
+				if (debug == DEBUG_HIGH)
+				{
+					for (int i = 0; i < ttl_trckPpl; i++)
+					{
+						Person*  p = trckPpl[i];
+						printPerson(p);
+					}
+				}
+
+
 				//For display purposes
-				if (debug > DEBUG_NONE)
+				if (debug >= DEBUG_LOW)
 				{
 					convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 					convert16to8(&polarAlt, polarAlt_);
@@ -1702,11 +2043,13 @@ int main(int argc, char* argv[])
 				if (!deleteBG)
 					tmp = activityMap_Back;
 				
+				
 				startTime_tmp = clock();
-				displayDetections(trckPpl, ttl_trckPpl, polarAlt_smooth_, *tmp);
+				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, pastPpl, ttlPastPpl, *tmp);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
+				
 
-				if (debug > DEBUG_LOW)//Show the comparison between the smoothed and the original remap polar space
+				if (debug >= DEBUG_MED)//Show the comparison between the smoothed and the original remap polar space
 				{
 					Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
 					for (int i = 0; i < polarAlt_smooth_.rows; i++)
@@ -1731,11 +2074,6 @@ int main(int argc, char* argv[])
 						}
 					}
 					addGrid(polarAlt_smooth_, Size(kernel.cols, kernel.rows));
-					cvSetMouseCallback(windMoA, selectPoint_callBack, (Mat*)activityMap);
-					Mat** images = new Mat*[2];
-					images[0] = &imgDebug;
-					images[1] = activityMap;
-					cvSetMouseCallback("Smooth comparison", selectPoint2_callBack, images);
 					imshow("Smooth comparison", imgDebug);
 				}
 				
@@ -1754,7 +2092,10 @@ int main(int argc, char* argv[])
 		}
 		else
 		{			
-			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE); 
+			startTime_tmp = clock();
+			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA); 
+			totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
+			
 			outMoA = &background;
 			if (recordOut == 1 && trans)
 					w << background;
@@ -1767,7 +2108,7 @@ int main(int argc, char* argv[])
 		}
 		imshow(windMoA, *outMoA);
 	
-		if (debug > DEBUG_NONE)
+		if (debug >= DEBUG_LOW)
 		{
 			imshow(windPolarName, polar_);
 			imshow("Polar Alt Smooth_", polarAlt_smooth_);
@@ -1821,11 +2162,19 @@ int main(int argc, char* argv[])
 				break;
 			}
 		}
+
+		//save current people
+		for (int i = 0; i < ttl_dtctPpl; i++)
+		{
+			ttlPastPpl = ttl_dtctPpl;
+			copyPerson(pastPpl[i], &dtctPpl[i]);
+			//pastPpl[i] = dtctPpl[i];
+		}
 		
 		ttl_dtctPpl = 0;
 		frames++;
 	}
-
+	delete[] pastPpl;
 	delete[] dtctPpl;
 
 	for (int i = 0; i < ttl_trckPpl; i++)
@@ -1841,6 +2190,14 @@ int main(int argc, char* argv[])
 		float time_p = totalIntervals[i]*100/totalIntervals[TOT_ID];
 		outDebugFile << titles[i] << ": " << time_p << " %" << endl;
 	}
+
+	outDebugFile << "PARTIAL EXECUTION TIME REPORT (MoA)" << endl;
+	for (int i = 0; i < TOTAL_SUBINTERVAL_MOA; i++)
+	{
+		float time_p = totalSubIntervalsMOA[i]*100/totalIntervals[MOA_ID];
+		outDebugFile << titles_subMOA[i] << ": " << time_p << " %" << endl;
+	}
+
 
 	outDebugFile << "PARTIAL EXECUTION TIME REPORT (UPDATE POLAR ALTERNATIVE)" << endl;
 	for (int i = 0; i < TOTAL_SUBINTERVAL_RPS; i++)
