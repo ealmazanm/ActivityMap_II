@@ -66,7 +66,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	bool bShouldStop = false;
 	bool trans = true;
 	bool bgComplete = false;
-	bool deleteBG = false;
+	bool deleteBG = true;
 
 	Mat depthImages[NUM_SENSORS];
 	Mat rgbImages[NUM_SENSORS];
@@ -141,7 +141,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	int nPoints = 0;
 	int frames = 0;
 	int debugFrame = -1;
-	while (!bShouldStop && frames < 500)
+	while (!bShouldStop && frames < 1000)
 	{		
 		if (debug != DEBUG_NONE)
 		{
@@ -175,18 +175,18 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 			//Creates a matrxi with depth values (ushort)
 			createDepthMatrix(depthMaps[i], depthMat[i]);
 
-			if (i == REF_CAM)
-			{
-				startTime_tmp = clock(); //time debuggin
-				//Mask out the complete ROI
-				//maskOutOverlapping(depthMat[i], rLeft, rRight);
-				//Selective Points Mask out 
-				maskOutOverlappingPointSel(depthMat[i], rLeft, rRight, kinects);
-				//Selective Mask out
-				//maskOutOverlappingSelective(depthMat[i], rLeft, rRight, kinects);
-				//updateDepthImage(depthImages[i], depthMat[i]);
-				totalIntervals[MASKOVERLAPPING_ID] += clock() - startTime_tmp; //time debugging
-			}
+			//if (i == REF_CAM)
+			//{
+			//	startTime_tmp = clock(); //time debuggin
+			//	//Mask out the complete ROI
+			//	//maskOutOverlapping(depthMat[i], rLeft, rRight);
+			//	//Selective Points Mask out 
+			//	maskOutOverlappingPointSel(depthMat[i], rLeft, rRight, kinects);
+			//	//Selective Mask out
+			//	//maskOutOverlappingSelective(depthMat[i], rLeft, rRight, kinects);
+			//	//updateDepthImage(depthImages[i], depthMat[i]);
+			//	totalIntervals[MASKOVERLAPPING_ID] += clock() - startTime_tmp; //time debugging
+			//}
 
 			//to create a mask for the noise (depth img is threhold)
 			cvtColor(depthImages[i],grey,CV_RGB2GRAY);
@@ -267,9 +267,9 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 					updatePolarAlternateive(&polarAlt, &polar, pntsMap, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug);	
 					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
 					
-					//startTime_tmp = clock();
-					//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
-					//totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
+					startTime_tmp = clock();
+					updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
+					totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
 				}
 		
 				//Todo: Create a method detection(polarAlt, moAPeople)
@@ -323,9 +323,27 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 				if (!deleteBG)
 					tmp = activityMap_Back;
 				
-				
+							
+				if (debug >= DEBUG_NONE && ttl_dtctPpl > 0)
+				{
+					Person* prs =  &dtctPpl[0];
+					int c = 1;
+					while (prs->id != 0)
+					{
+						prs = &dtctPpl[c];
+						c++;
+					}
+					if (prs->id == 0)
+					{
+						outDebugFile << "Frame: " << frames << endl;
+						outDebugFile << "SigmaX,Y_rps: " << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << endl;
+						Utils::printValuesF(&prs->covMoA, "Cov MoA", outDebugFile);
+					}
+				}
+
 				startTime_tmp = clock();
-				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, pastPpl, ttlPastPpl, *tmp, debug);
+				//displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, pastPpl, ttlPastPpl, *tmp, debug);
+				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
 
@@ -373,7 +391,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		else
 		{			
 			startTime_tmp = clock();
-			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA); 
+			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT); 
 			totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
 			
 			outMoA = &background;
@@ -452,13 +470,23 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		}
 		
 		ttl_dtctPpl = 0;
+
+	
+		//bShouldStop = frames == 244;
 		frames++;
 	}
-	delete[] pastPpl;
-	delete[] dtctPpl;
 
 	for (int i = 0; i < ttl_trckPpl; i++)
 		delete trckPpl[i];
+
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		delete []pointsFore2D[i];
+	}
+	delete[] pastPpl;
+	delete[] dtctPpl;
+	delete activityMap;
+	delete activityMap_Back;
 
 	//delete[] trckPpl;
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "PplDetection_v1.h"
 #include "PplTracker_v1.h"
+#include <vld.h>
 
 /*
 Arg 1: 0:Video; 1:live
@@ -42,6 +43,8 @@ int main(int argc, char* argv[])
 	PplDetection_v1 pplDetc;
 	pplDetc.detection(fromVideo, recordOut, tilt, debug);
 
-//	PplTracker_v1 pplTrack;
-//	pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//VLDEnable();
+	//PplTracker_v1 pplTrack;
+	//pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//VLDReportLeaks();
 }

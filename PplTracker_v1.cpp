@@ -1,4 +1,5 @@
 #include "PplTracker_v1.h"
+#include <vld.h>
 
 
 PplTracker_v1::PplTracker_v1(void)
@@ -10,24 +11,37 @@ PplTracker_v1::~PplTracker_v1(void)
 {
 }
 
+XnPoint3D p;
+int kin = -1;
+void pointSelectionHeight_onMouse(int event, int x, int y, int flags, void* param)
+{
+	if (event == CV_EVENT_FLAG_LBUTTON)
+	{
+		int cam = *((int*)param);
+		if (x != -1 && y != -1)
+		{
+			kin = cam;
+			p.X = x;
+			p.Y = y;
+			/*int depth = depthMaps[cam][y*XN_VGA_X_RES+x];
+			if (depth != 0)
+			{
+				XnPoint3D p2D;
+				XnPoint3D p3D;
+				p2D.X = x; p2D.Y = y; p2D.Z = depth;
+				kinects[cam].arrayBackProject(&p2D, &p3D, 1);
+				kinects[cam].transformArray(&p3D,1);
+				cout << "Height: " << p3D.Y << endl;
+			}*/
+		}
+	}
+}
+
+
+
 void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debug)
 {
 	bool saved = false;
-	if (fromVideo)
-		cout << ". Live execution";
-	else
-		cout << ". Video execution";
-
-	if (!recordOut)
-		cout << ". No record" << endl;
-	else
-		cout << ". Record" << endl;
-	if (debug == DEBUG_NONE)
-		cout << ". Debug none" << endl;
-	else if (debug == DEBUG_LOW)
-		cout << ". Debug low" << endl;
-	else if (debug == DEBUG_HIGH)
-		cout << ". Debug high" << endl;
 
 	char* paths[3];
 	paths[0] = "d:/Emilio/Tracking/DataSet/kinect0_calib.oni";
@@ -71,7 +85,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 	//flags
 	bool bShouldStop = false;
 	bool trans = true;
-	bool bgComplete = false;
+	bool bgComplete = true;
 	bool deleteBG = false;
 
 	Mat depthImages[NUM_SENSORS];
@@ -116,11 +130,11 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 
 	
 	VideoWriter w, w1;
-	recordOut = 0;
+	//recordOut = 0;
 	if (recordOut == 1)
 	{
 		w.open("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/RemapPolarSpace_Detection.mpg",CV_FOURCC('P','I','M','1'), 20.0, polarAlt_smooth_.size(), true);
-		w1.open("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
+		w1.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\MoA_tracking.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	}	
 
 	//Size of kernel: smooth rps;
@@ -144,6 +158,21 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 //	int x_left, x_right;
 //	x_left = calculateX(&kinects[0], &kinects[1], true);
 //	x_right = calculateX(&kinects[2], &kinects[1], false);
+	char* nWindows[NUM_SENSORS];
+	nWindows[0] =  "rgb 0";
+	nWindows[1] =  "rgb 1";
+	nWindows[2] =  "rgb 2";
+
+	namedWindow(nWindows[0]);
+	namedWindow(nWindows[1]);
+	namedWindow(nWindows[2]);
+	int cam0 = 0;
+	int cam1 = 1;
+	int cam2 = 2;
+	cvSetMouseCallback(nWindows[0], pointSelectionHeight_onMouse, &cam0);
+	cvSetMouseCallback(nWindows[1], pointSelectionHeight_onMouse, &cam1);
+	cvSetMouseCallback(nWindows[2], pointSelectionHeight_onMouse, &cam2);
+
 
 	char* windMoA = "Activity Map";
 	clock_t startTime = clock();
@@ -152,16 +181,21 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 	int nPoints = 0;
 	int frames = 0;
 	int debugFrame = -1;
-	while (!bShouldStop)
+
+	vector<PointMapping>* pntsMap2 = new vector<PointMapping>[polarAlt.rows*polarAlt.cols];
+
+	while (!bShouldStop && frames < 1000)
 	{		
 		//cout << "Frames: " << frames << endl;
 
 		if (frames == 5) 
 			bgComplete = true;
+		if (debug >= DEBUG_LOW)
+			outDebugFile << "Frame " << frames << endl;
+
 		if (debug >= DEBUG_MED)
 		{
-			cout << "Frames " << frames << endl;
-			outDebugFile << "Frame " << frames << endl;
+			cout << "Frames " << frames << endl;			
 			if (frames%10 == 0)
 			{
 				clock_t endTime = clock();
@@ -188,21 +222,8 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 			kinects[i].getDepthImage(depthImages[i]);
 			kinects[i].getRGBImage(rgbImages[i]);
 			
-			//Creates a matrxi with depth values (ushort)
+			//Creates a matrix with depth values (ushort)
 			createDepthMatrix(depthMaps[i], depthMat[i]);
-
-			if (i == REF_CAM)
-			{
-				startTime_tmp = clock(); //time debuggin
-				//Mask out the complete ROI
-				//maskOutOverlapping(depthMat[i], rLeft, rRight);
-				//Selective Points Mask out 
-				maskOutOverlappingPointSel(depthMat[i], rLeft, rRight, kinects);
-				//Selective Mask out
-				//maskOutOverlappingSelective(depthMat[i], rLeft, rRight, kinects);
-				//updateDepthImage(depthImages[i], depthMat[i]);
-				totalIntervals[MASKOVERLAPPING_ID] += clock() - startTime_tmp; //time debugging
-			}
 
 			//to create a mask for the noise (depth img is threhold)
 			cvtColor(depthImages[i],grey,CV_RGB2GRAY);
@@ -228,9 +249,9 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
 				totalIntervals[BSUB_ID] += clock() - startTime_tmp; //time debugging
 				nPoints += numberOfForegroundPoints[i];
-				if (debug >= DEBUG_MED)//Draw the output of the foreground detection
+				if (debug >= DEBUG_HIGH)//Draw the output of the foreground detection
 				{
-					if (frames == 96 && i == 1)
+					if (frames == -1 && i == 1)
 						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Orig.jpg", rgbImages[1]);
 					for (int c = 0; c < numberOfForegroundPoints[i]; c++)
 					{
@@ -240,7 +261,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 						ptr[(3*(int)p->X)+1] = 0;
 						ptr[(3*(int)p->X)+2] = 255;
 					}
-					if (frames == 96 && i == 1)
+					if (frames == -1 && i == 1)
 						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Red.jpg", rgbImages[1]);
 				}
 			}
@@ -250,9 +271,16 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				int ttl_dtctPpl = 0;
 
 				//list of 3D points + colour map to the RP space
-				PointMapping* pntsMap = new PointMapping[nPoints];
-				int ttlPnts = 0;
+				//PointMapping* pntsMap = new PointMapping[nPoints];
 
+				int ttl = RANGE_ROWS*RANGE_COLS;
+				for (int i = 0; i < ttl; i++)
+				{
+					if (!pntsMap2[i].empty())
+						pntsMap2[i].clear();
+				}
+				
+				int ttlPnts = 0;
 				for (int i = 0; i < NUM_SENSORS; i++)
 				{
 					startTime_tmp = clock();
@@ -261,7 +289,11 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					kinects[i].arrayBackProject(pointsFore2D[i], points3D[i], numberOfForegroundPoints[i]);
 					totalIntervals[BACKPR_ID] += clock() - startTime_tmp; //time debugging
 
-					if (debug == DEBUG_LOW && frames == debugFrame)
+					startTime_tmp = clock();
+					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
+					totalIntervals[PTRANS_ID] += clock() - startTime_tmp; //time debugging
+
+					if (debug == DEBUG_HIGH && frames == -1)
 					{
 						int total = numberOfForegroundPoints[i];
 						ofstream* out;
@@ -274,19 +306,21 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 
 						for (int j = 0; j < total; j++)
 						{
-							*out << (float)points3D[i][j].X << " " << (float)points3D[i][j].Y << " " << (float)points3D[i][j].Z << endl; 
-							
+							*out << (float)points3D[i][j].X << " " << (float)points3D[i][j].Y << " " << (float)points3D[i][j].Z << endl; 						
 						}
 					}
-
-					startTime_tmp = clock();
-					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
-					totalIntervals[PTRANS_ID] += clock() - startTime_tmp; //time debugging
 					
 					//Create alternative representation
 					startTime_tmp = clock();
-					updatePolarAlternateive(&polarAlt, &polar, pntsMap, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug);	
+					updatePolarAlternateive(&polarAlt, &polar, pntsMap2, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug, i);	
 					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
+
+					if (debug >= DEBUG_NONE)
+					{
+						startTime_tmp = clock();
+						updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
+						totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
+					}
 					
 				}
 		
@@ -296,30 +330,29 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				totalIntervals[SMOOTH_ID] += clock() - startTime_tmp; //time debugging
 
 				startTime_tmp = clock();
-				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap, ttlPnts, debug, frames, debugFrame); //Connected component detection
+				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
 
-				if (debug == DEBUG_HIGH)
+				if (debug >= DEBUG_HIGH)
 				{
+
 					//print bounding box areas					
 					for (int i = 0; i < ttl_dtctPpl; i++)
 					{
 						const Person* p = &(dtctPpl[i]);
-						float sgX = p->covMoA.at<float>(0,0);
-						float sgY = p->covMoA.at<float>(1,1);
-						outBboxModel << sgX*sgY << endl;
-
-						if (frames == debugFrame)
-						{
-							Utils::printValuesF(&p->covMoA, "CovMoa(II)", outDebugFile);
-							//printValuesF(&p->gtArea, "Gate area(II)", outDebugFile);
-						}
+						outDebugFile << "Appearance model person id: " << p->id << endl;
+						outDebugFile << "Max Height: " << p->maxHeight << ". Min Height: " << p->minHeight << endl;
+						//if (p->id == 0)
+						//	cout << "Prson " << p->id <<"-> Max height: " << p->maxHeight <<". Min height: " << p->minHeight << endl;
+						//for (int j = 0; j < MODEL_NBINS; j++)
+						//{
+						//	outDebugFile << "Height model bin: " << j << ": " << p->heightModel[j] << endl;
+						//	outDebugFile << "Colour model bin: " << j << ": " << p->colourModel[j].mean.val[0] << ", " << p->colourModel[j].mean.val[1] << ", " << p->colourModel[j].mean.val[2] << endl;
+						//}
 					}
-
-				}
+				}			
 				
-				
-				if (debug > DEBUG_MED && ttl_dtctPpl > 0)
+				if (debug > DEBUG_HIGH && ttl_dtctPpl > 0)
 				{
 					for (int i = 0; i < ttl_dtctPpl; i++)
 					{		
@@ -336,17 +369,65 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				tracking(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, activityMap, debug, frames);
 				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
 
+
+
+				//debug
+				if (debug >= DEBUG_HIGH && ttl_trckPpl > 0)
+				{
+					Person* prs =  &trckPpl[0];
+					int c = 1;
+					while (prs->id != 0)
+					{
+						prs = &trckPpl[c];
+						c++;
+					}
+					if (prs->id == 0)
+					{
+						if (prs->lost < TRACKLOST_THRESHOLD)
+						{
+							outDebugFile << "Person Id " << prs->id << ": RPS mean = (" << prs->mean_RPS.x << ", " << prs->mean_RPS.y << "). RPS Sigma = (" << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << "). " << endl;
+							int ttl = RANGE_ROWS*RANGE_COLS;
+							for (int i = 0; i < ttl; i++)
+							{							
+								vector<PointMapping> pnts = pntsMap2[i];
+								int t1 = pnts.size();
+								for (int j = 0; j < t1; j++)
+								{
+									PointMapping pntMap = pnts[j];
+									if (pntMap.idPerson == prs->idDetection)
+									{
+										uchar* ptr = rgbImages[pntMap.cam].ptr<uchar>(pntMap.p2D.Y);
+										int x = pntMap.p2D.X;
+										ptr[3*x] = 255;
+										ptr[3*x+1] = 0;
+										ptr[3*x+2] = 0;
+									}	
+								}
+							}
+							
+							//drawPersonPointsCov_debug(prs->meanMoA2, prs->covMoA2, activityMap, Scalar::all(0));
+
+							imshow("apperance Model", prs->apperance);
+						
+							//whiteBackApp.copyTo(prs->apperance);
+							for (int i = 0; i < MODEL_NBINS; i++)
+							{
+								prs->countApperance[i] = 0;
+							}
+						}
+					}
+					else
+						cout << "Error" << endl;
+				}
+
 				//generate tracks history
-				generateTrackHistory(trckPpl, ttl_trckPpl, frames);
-				
+				//generateTrackHistory(trckPpl, ttl_trckPpl, frames);				
 
 				if (debug > DEBUG_MED && ttl_trckPpl > 0) 
 				{
 					imshow(windMoA, *activityMap);
 					waitKey(0);
 				}
-				//if (ttl_trckPpl > 2)
-				//	cout << "stop dude" << endl;
 
 				if (debug == DEBUG_HIGH)
 				{
@@ -357,25 +438,45 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					}
 				}
 
-
 				//For display purposes
-				if (debug >= DEBUG_LOW)
+				if (debug >= DEBUG_NONE)
 				{
 					Utils::convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 					Utils::convert16to8(&polarAlt, polarAlt_);
 					Utils::convert16to8(&polar, polar_);
+					displayTrackersRPS(trckPpl, ttl_trckPpl, polarAlt_smooth_, debug);
+					imshow("Polar Alt", polar_);
+					imshow("Polar Alt Smooth_", polarAlt_smooth_);
+					imshow("Polar Alt", polarAlt_);
 				}
 				Mat *tmp = activityMap;
 				if (!deleteBG)
 					tmp = activityMap_Back;
-				
-				
+							
+
+				if (debug >= DEBUG_NONE && ttl_dtctPpl > 0)
+				{
+					Person* prs =  &dtctPpl[0];
+					int c = 1;
+					while (prs->id != 0)
+					{
+						prs = &dtctPpl[c];
+						c++;
+					}
+					if (prs->id == 0)
+					{
+						outDebugFile << "Frame: " << frames << endl;
+						outDebugFile << "SigmaX,Y_rps: " << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << endl;
+						Utils::printValuesF(&prs->covMoA, "Cov MoA", outDebugFile);
+					}
+				}
 				startTime_tmp = clock();
-				displayTrackers(trckPpl, ttl_trckPpl, polarAlt_smooth_, *tmp, debug);
+				//displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug);
+				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
 
-				if (debug >= DEBUG_MED)//Show the comparison between the smoothed and the original remap polar space
+				if (debug >= DEBUG_HIGH)//Show the comparison between the smoothed and the original remap polar space
 				{
 					Mat imgDebug = Mat(polarAlt_smooth_.size(), CV_8UC3);
 					for (int i = 0; i < polarAlt_smooth_.rows; i++)
@@ -404,7 +505,8 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				}
 				
 				//free memory for the mapping
-				delete []pntsMap;
+				//delete []pntsMap;
+				
 				delete [] dtctPpl;
 				ttl_dtctPpl = 0;
 				for (int i = 0; i < NUM_SENSORS; i++)
@@ -425,7 +527,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 		else
 		{			
 			startTime_tmp = clock();
-			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA); 
+			actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT); 
 			totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
 			
 			outMoA = &background;
@@ -439,17 +541,36 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 			outMoA = &outMoAScaled;
 		}
 		imshow(windMoA, *outMoA);
-	
+		if (debug >= DEBUG_HIGH && frames == 247)
+		{
+			imwrite("c:\\Dropbox\\PhD\\Matlab\\MoAPoints\\MoA.jpg", *outMoA);
+		}
+
 		if (debug >= DEBUG_LOW)
 		{
-			imshow("Polar Alt", polar_);
-			imshow("Polar Alt Smooth_", polarAlt_smooth_);
-			imshow("Polar Alt", polarAlt_);
-			imshow("rgb0", rgbImages[0]);
-			imshow("rgb1", rgbImages[1]);
-			imshow("rgb2", rgbImages[2]);
+			//imshow("Polar Alt", polar_);
+			//imshow("Polar Alt Smooth_", polarAlt_smooth_);
+			//imshow("Polar Alt", polarAlt_);
+			imshow(nWindows[0], rgbImages[0]);
+			imshow(nWindows[1], rgbImages[1]);
+			imshow(nWindows[2], rgbImages[2]);
 		}
 		int c = waitKey(waitTime);
+
+		if (kin != -1)
+		{
+			int depth = depthMaps[kin][(int)p.Y *XN_VGA_X_RES+ (int)p.X];
+			if (depth != 0)
+			{			
+				XnPoint3D p3D;
+				p.Z = depth;
+				kinects[kin].arrayBackProject(&p, &p3D, 1);
+				kinects[kin].transformArray(&p3D,1);
+				cout << "Height: " << p3D.Y << endl;
+			}
+
+			kin = -1;
+		}
 		
 		switch (c)
 		{
@@ -480,16 +601,16 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 			}
 		case 13: //enter
 			{
-				debugFrame = frames + 1;
+				//debugFrame = frames + 1;
 				//imwrite("c:/Dropbox/Phd/Individual Studies/Problems/MoA_Tilting.jpg", *outMoA);
 				//imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1.jpg", rgbImages[1]);
 				
-				//if (waitTime == 0)
-				//	waitTime=1;
-				//else
+				if (waitTime == 0)
+					waitTime=1;
+				else
 				//{
 				//	//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
-				//	waitTime=0;
+					waitTime=0;
 				//}
 				break;
 			}
@@ -502,10 +623,20 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 		//	copyPerson(pastPpl[i], &dtctPpl[i]);
 			//pastPpl[i] = dtctPpl[i];
 		//}
-		
+		if (frames == 350)
+			bShouldStop = true;
 		
 		frames++;
 	}
+	delete []pntsMap2;
+
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		delete []pointsFore2D[i];
+	}
+
+	delete activityMap;
+	delete activityMap_Back;
 
 	//write on files the tracks for posterior evaluation
 	char* path = "c:/Dropbox/PhD/Matlab/TrackingEval/CLEAT-MOT-script/ST/st";
@@ -534,19 +665,34 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 	//delete[] pastPpl;
 	//delete[] dtctPpl;
 
-	//for (int i = 0; i < ttl_trckPpl; i++)
-	//	delete trckPpl[i];
+	/*for (int i = 0; i < ttl_trckPpl; i++)
+		delete trckPpl[i];*/
 
-	//delete[] trckPpl;
+	delete[] trckPpl;
 
 	totalIntervals[TOT_ID] = clock() - startTotalTime;
 	//BUILD REPORT
-	outDebugFile << "EXECUTION TIME REPORT" << endl;
+	outDebugFile << endl << endl << "EXECUTION TIME REPORT" << endl;
 	for (int i = 0; i < TOTAL_INTERVALS-1; i++)
 	{
 		float time_p = totalIntervals[i]*100/totalIntervals[TOT_ID];
 		outDebugFile << titles[i] << ": " << time_p << " %" << endl;
 	}
+	outDebugFile << endl;
+	outDebugFile << "PARTIAL EXECUTION PEOPLE DETECTION" << endl;
+	for (int i = 0; i < TOTAL_SUBINTERVAL_DETECTION; i++)
+	{
+		float timpe_p = totalSubIntervalsDetection[i]*100/totalIntervals[DET_ID];
+		outDebugFile << titles_subDet[i] << ": " << timpe_p << " %" << endl;
+	}
+
+//	outDebugFile << endl;
+	//outDebugFile << "PARTIAL pARTIAL EXECUTION BUILD APPERANCE MODEL" << endl;
+	//for (int i = 0; i < TOTAL_SUBSUBINTERVAL_APP; i++)
+	//{
+	//	float timpe_p = totalSubSubIntevalsAPP[i]*100/totalSubIntervalsDetection[BUILDAPPEARANCE_ID];
+	//	outDebugFile << titles_subsubAPP[i] << ": " << timpe_p << " %" << endl;
+	//}
 
 	//outDebugFile << "PARTIAL EXECUTION TIME REPORT (MoA)" << endl;
 	//for (int i = 0; i < TOTAL_SUBINTERVAL_MOA; i++)

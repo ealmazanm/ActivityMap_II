@@ -58,9 +58,9 @@ namespace PplDtcV1
 		static const int SCALE_RANGE_ALT = 25896; //scale the alternative espace to match MAX_RANGE
 
 	//PERSON MODEL SETTINGS
-		static const int MODEL_MAX_HEIGHT = 300;
-		static const int MODEL_MIN_HEIGHT = -2000;
-		static const int MODEL_BINRANGE = 230;
+		static const int MODEL_MAX_HEIGHT = -400;
+		static const int MODEL_MIN_HEIGHT = -2400;
+		static const int MODEL_BINRANGE = 250;
 		static const int MODEL_NBINS = (MODEL_MAX_HEIGHT-MODEL_MIN_HEIGHT)/MODEL_BINRANGE;
 		static const int MAX_PEOPLE = 50;
 
@@ -79,9 +79,10 @@ namespace PplDtcV1
 			int id;
 			Mat stateMoA;
 			Mat covMoA;
-			Point  mean_RPS;
-			int sigmaY_RPS;
-			int sigmaX_RPS;
+			Mat covMoA_points;
+			Point2d  mean_RPS;
+			double sigmaY_RPS;
+			double sigmaX_RPS;
 			Mat R;
 			Mat Q;
 			Mat A; 
@@ -141,6 +142,7 @@ namespace PplDtcV1
 		static ifstream tiltTXT("D:\\CameraCalibrations\\extrinsics\\tilt.txt");
 
 	//FUNCTIONS
+
 		//Transform the array of depths into a matrix (USHORT/CV_16U) of depths
 
 		static int fillArrayPointSel(const Mat& roi, XnPoint3D* points, int origX)
@@ -287,7 +289,7 @@ namespace PplDtcV1
 				float Z = p3D[i].Z;
 			
 				float range = sqrtf(pow(X,2) + pow(Z,2));
-				if (range > MAX_RANGE || Z > ActivityMap_Utils::MAX_Z_TRANS  || Y > ActivityMap_Utils::CEILING_THRESHOLD || Y < ActivityMap_Utils::FLOOR_THRESHOLD)
+				if (range > MAX_RANGE || Z > ActivityMap_Utils::MAX_Z_TRANS  || Y > MODEL_MAX_HEIGHT || Y < MODEL_MIN_HEIGHT)
 				{
 					//if (debug > DEBUG_NONE)
 					//	outDebugFile << "UpdatePolarAlternative: 3D Point Rejectected. Info: 3DPoint: " << p.X <<", "<< p.Y << ", " << p.Z << 
@@ -300,9 +302,9 @@ namespace PplDtcV1
 				int angle = 90;
 				if (X != 0 && Z != 0)
 					if (X > 0)
-						angle = (atanf(Z/abs(X)))*toRad;
+						angle = (atanf(Z/abs(X)))*toRad + 0.5;
 					else
-						angle = 180-((atanf(Z/abs(X)))*toRad);
+						angle = 180-((atanf(Z/abs(X)))*toRad) + 0.5;
 				totalSubIntervalsRPS[ANGLE_ID] += clock() - startTime; //time debugging
 	
 				startTime = clock(); //time debuggin
@@ -356,7 +358,7 @@ namespace PplDtcV1
 		}
 
 
-		static void findBlobs(const cv::Mat &binary, std::vector < std::vector<cv::Point2i> > &blobs)
+		static void findBlobs(const cv::Mat &binary, std::vector < std::vector<cv::Point2d> > &blobs)
 		{
 			blobs.clear();
 
@@ -388,7 +390,7 @@ namespace PplDtcV1
 					cv::Rect rect;
 					cv::floodFill(label_image, cv::Point(x,y), label_count, &rect, 0, 0, 4);
 
-					std::vector <cv::Point2i> blob;
+					std::vector <cv::Point2d> blob;
 
 					int maxI = rect.y + rect.height;
 					int maxJ = rect.x + rect.width;
@@ -402,7 +404,7 @@ namespace PplDtcV1
 								continue;
 							}
 
-							blob.push_back(cv::Point2i(j,i));
+							blob.push_back(cv::Point2d(j,i));
 						}
 					}
 
@@ -416,7 +418,7 @@ namespace PplDtcV1
 		/*
 		Convert a point from the remap polar space rep. to the MoA (3D)
 		*/
-		static Point convertBack(const Point* p)
+		static Point convertBack(const Point2d* p)
 		{
 			Point out;
 			//Calculate range
@@ -448,6 +450,7 @@ namespace PplDtcV1
 		
 			p->stateMoA = Mat::zeros(4,1,CV_32F);
 			p->covMoA = Mat::zeros(4,4, CV_32F);
+			p->covMoA_points = Mat::zeros(2,2,CV_32F);
 			//p->gtArea = Mat::zeros(2,2, CV_32F);
 			p->control = DTC_FULL;
 			p->lost = 0;
@@ -458,78 +461,308 @@ namespace PplDtcV1
 
 		}
 
+		////Projects the detected gaussian distribution (mean, variance) to the MoA (non linear)
+		//static void projectLocation2MoA(Person* prs, int debug, int frames, int debugFrame)
+		//{
+
+		//	//Mean projection to MoA
+		//	Point cMoA;
+		//	cMoA = convertBack(&prs->mean_RPS);
+		//	XnPoint3D p3D;
+		//	p3D.X = cMoA.x; p3D.Y = MODEL_MAX_HEIGHT - 1; p3D.Z = cMoA.y;
+		//	Point meanMoA = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+		//	if (meanMoA.x == -1)
+		//	{
+		//		if (debug > DEBUG_NONE)
+		//		{
+		//			outDebugFile << "ProjectLocation: person located out of MoA range. INFO: RPS point: " << meanMoA.x << ", " << meanMoA.y <<
+		//				". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(p3D.X,2) + pow(p3D.Z,2)) <<". MAX_RANGE: " << 
+		//				MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << MODEL_MAX_HEIGHT << 
+		//				". FLOOR_THRESH: " << MODEL_MIN_HEIGHT << endl;
+		//		}
+		//		return; //TODO: ERROR LOG
+		//	}
+		//	prs->stateMoA.at<float>(0, 0) = meanMoA.x;
+		//	prs->stateMoA.at<float>(1, 0) = meanMoA.y;
+
+		//	//Covariance projection to MoA
+		//	float sigmaAlphaRad = prs->sigmaX_RPS*2*CV_PI/180;
+		//	float sigmaRange = prs->sigmaY_RPS*2;
+		//	float meanAlpha = prs->mean_RPS.x*CV_PI/180; //rad
+		//	float meanRange = prs->mean_RPS.y; //mm
+		//				
+		//	//Jacobian matrix of partial derivatives
+		//	//float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/ActivityMap_Utils::X_STEP;
+		//	//float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::X_STEP;						
+		//	//float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::Z_STEP;
+		//	//float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/ActivityMap_Utils::Z_STEP;
+
+		//	float jacob_11 = -2.09059*exp(-0.00280843*meanRange)*cosf(meanAlpha);
+		//	float jacob_12 = (158.73 - 744.397*exp(-0.00280843*meanRange))*sinf(meanAlpha);
+		//	float jacob_21 = 2.09059*exp(-0.00280843*meanRange)*sinf(meanAlpha);
+		//	float jacob_22 = (158.73-744.397*exp(-0.00280843*meanRange))*cosf(meanAlpha);
+
+		//	float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
+		//	Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
+		//	//covariance matrix in the plan view remap polar space(RPS)
+		//	float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
+		//	Mat covPolar = Mat(2,2, CV_32FC1, varValues);
+		//	//Covariance approximation in the plan view MoA
+		//	Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+
+		//	covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
+		//	covCartessian.copyTo(prs->covMoA_points);
+
+		//	//define the gate region 2x2
+		//	Mat spaceCov = prs->covMoA(Rect(0,0, 2,2))*4;
+		//	if (debug > DEBUG_MED)
+		//	{
+		//		if (frames == debugFrame)
+		//		{
+		//			Utils::printValuesF(&prs->covMoA, "CovMoa(I)", outDebugFile);
+		//			Utils::printValuesF(&spaceCov, "Gate area", outDebugFile);
+		//			Utils::printValuesF(&covCartessian, "Cov real", outDebugFile);
+		//		}
+		//		assert(spaceCov.rows, 2);
+		//		assert(spaceCov.cols, 2);
+		//		for (int i = 0; i < spaceCov.rows; i++)
+		//		{
+		//			for (int j = 0; j < spaceCov.cols; j++)
+		//			{
+		//				assert(spaceCov.at<float>(i,j), 4*prs->covMoA.at<float>(i,j));	
+		//				assert(covCartessian.at<float>(i,j) , prs->covMoA.at<float>(i,j));
+		//			}
+		//		}
+		//	}
+		//	//usign 2 standard deviations. Probability of 95%
+		//	//spaceCov.copyTo(prs->gtArea);
+
+		//}
+
+		static void projectCovariance_Jacob(Person* prs)
+		{
+			//Covariance projection to MoA
+			float sigmaAlphaRad = prs->sigmaX_RPS*CV_PI/180;
+			float sigmaRange = prs->sigmaY_RPS;
+			float meanAlpha = prs->mean_RPS.x*CV_PI/180; //rad
+			float meanRange = prs->mean_RPS.y; //mm
+						
+			float jacob_11 = -2.09059*exp(-0.00280843*meanRange)*cosf(meanAlpha);
+			float jacob_12 = (158.73 - 744.397*exp(-0.00280843*meanRange))*sinf(meanAlpha);
+			float jacob_21 = 2.09059*exp(-0.00280843*meanRange)*sinf(meanAlpha);
+			float jacob_22 = (158.73-744.397*exp(-0.00280843*meanRange))*cosf(meanAlpha);
+
+			float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
+			Mat jacobMat = Mat(2,2, CV_32F, jacobValues);
+			//covariance matrix in the plan view remap polar space(RPS)
+			float varValues[4] = {sigmaRange*sigmaRange, 0,0, sigmaAlphaRad*sigmaAlphaRad}; 
+			Mat covPolar = Mat(2,2, CV_32F, varValues);
+			//Covariance approximation in the plan view MoA
+			Mat covCartessian = jacobMat * covPolar * jacobMat.t();
+
+			//Utils::printValuesF(&covCartessian, "CovCartessian_Jacob" , cout);
+
+			covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
+			covCartessian.copyTo(prs->covMoA_points);
+
+		}
+
+		static void projectCovariance_Var(Person* prs)
+		{
+
+			//derivative of the transformation function that goes from the rps to the polar space
+			int muRho_ = (RANGE_ROWS+0.5 - prs->mean_RPS.y)*RANGE_STEP;
+			int muRho = -3833.28*(0.869577 - exp(0.000117019*muRho_));
+			float fDerv = 0.448567*exp(0.000117019 * muRho_);
+			float sigmaRho_ = prs->sigmaY_RPS * RANGE_STEP;
+			float sigmaRho = sigmaRho_ * fDerv;
+			float sigmaTheta = muRho*tanf(prs->sigmaX_RPS*CV_PI/180);
+
+			float sigmaY_Moa = sigmaRho/ActivityMap_Utils::Z_STEP;
+			float sigmaX_Moa = sigmaTheta/ActivityMap_Utils::X_STEP;
+
+			float covValues[] = {sigmaY_Moa*sigmaY_Moa, 0, 0, sigmaX_Moa*sigmaX_Moa};
+			Mat covMoA = Mat(2,2, CV_32F, covValues);
+
+			Mat R;
+			float meanTheta_rad = prs->mean_RPS.x*CV_PI/180;
+			float cosTheta = cosf(meanTheta_rad);
+			if (meanTheta_rad < (CV_PI/2)) //clockwise rotation
+			{				
+				float vals[] = {cosTheta, -sinf(meanTheta_rad), sinf(meanTheta_rad), cosTheta}; 
+				R = Mat(2,2, CV_32F, vals);
+			}
+			else //counterclockwise rotation
+			{
+				float vals[] = {cosTheta, sinf(meanTheta_rad), -sinf(meanTheta_rad), cosTheta}; 
+				R = Mat(2,2, CV_32F, vals);
+			}
+
+			Mat covCartessian = R*covMoA*R.t();
+
+			//printValuesF(&covCartessian, "CovCartessian_var" , cout);
+
+			covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
+			covCartessian.copyTo(prs->covMoA_points);
+
+		}
 		//Projects the detected gaussian distribution (mean, variance) to the MoA (non linear)
 		static void projectLocation2MoA(Person* prs, int debug, int frames, int debugFrame)
 		{
-
 			//Mean projection to MoA
 			Point cMoA;
 			cMoA = convertBack(&prs->mean_RPS);
 			XnPoint3D p3D;
-			p3D.X = cMoA.x; p3D.Y = ActivityMap_Utils::CEILING_THRESHOLD - 1; p3D.Z = cMoA.y;
-			Point meanMoA = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE);
+			p3D.X = cMoA.x; p3D.Y = MODEL_MAX_HEIGHT - 1; p3D.Z = cMoA.y;
+			Point meanMoA = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
 			if (meanMoA.x == -1)
 			{
 				if (debug > DEBUG_NONE)
 				{
 					outDebugFile << "ProjectLocation: person located out of MoA range. INFO: RPS point: " << meanMoA.x << ", " << meanMoA.y <<
 						". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(p3D.X,2) + pow(p3D.Z,2)) <<". MAX_RANGE: " << 
-						MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD << 
-						". FLOOR_THRESH: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+						MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << MODEL_MAX_HEIGHT << 
+						". FLOOR_THRESH: " << MODEL_MIN_HEIGHT << endl;
 				}
 				return; //TODO: ERROR LOG
 			}
 			prs->stateMoA.at<float>(0, 0) = meanMoA.x;
 			prs->stateMoA.at<float>(1, 0) = meanMoA.y;
 
+			//First option (using jacobian matrices)
+			//projectCovariance_Jacob(prs);
 
-			//Covariance projection to MoA
-			float sigmaAlphaRad = prs->sigmaX_RPS*2*CV_PI/180;
-			float sigmaRange = prs->sigmaY_RPS*2;
-			float meanAlpha = prs->mean_RPS.x*CV_PI/180; //rad
-			float meanRange = prs->mean_RPS.y; //mm
-						
-			//Jacobian matrix of partial derivatives
-			float jacob_11 = (-40.8475*exp(-0.00272633*meanRange)*cosf(meanAlpha))/ActivityMap_Utils::X_STEP;
-			float jacob_12 = (3333.33-14982.6*exp(-0.00272633*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::X_STEP;						
-			float jacob_21 = (-40.8541*exp(-0.00272652*meanRange)*sinf(meanAlpha))/ActivityMap_Utils::Z_STEP;
-			float jacob_22 = (14984*exp(-0.00272652*meanRange)-3333.33*cosf(meanAlpha))/ActivityMap_Utils::Z_STEP;
-			float jacobValues[4] = {jacob_11, jacob_12, jacob_21, jacob_22}; 
-			Mat jacobMat = Mat(2,2, CV_32FC1, jacobValues);
-			//covariance matrix in the plan view remap polar space(RPS)
-			float varValues[4] = {powf(sigmaRange,2), 0,0, powf(sigmaAlphaRad,2)}; 
-			Mat covPolar = Mat(2,2, CV_32FC1, varValues);
-			//Covariance approximation in the plan view MoA
-			Mat covCartessian = jacobMat * covPolar * jacobMat.t();
-
-			covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
-
-
-			//define the gate region 2x2
-			Mat spaceCov = prs->covMoA(Rect(0,0, 2,2))*4;
-			if (debug > DEBUG_MED)
-			{
-				if (frames == debugFrame)
-				{
-					Utils::printValuesF(&prs->covMoA, "CovMoa(I)", outDebugFile);
-					Utils::printValuesF(&spaceCov, "Gate area", outDebugFile);
-					Utils::printValuesF(&covCartessian, "Cov real", outDebugFile);
-				}
-				assert(spaceCov.rows, 2);
-				assert(spaceCov.cols, 2);
-				for (int i = 0; i < spaceCov.rows; i++)
-				{
-					for (int j = 0; j < spaceCov.cols; j++)
-					{
-						assert(spaceCov.at<float>(i,j), 4*prs->covMoA.at<float>(i,j));	
-						assert(covCartessian.at<float>(i,j) , prs->covMoA.at<float>(i,j));
-					}
-				}
-			}
-			//usign 2 standard deviations. Probability of 95%
-			//spaceCov.copyTo(prs->gtArea);
-
+			//Second option (projecting the variances)
+			projectCovariance_Var(prs);
 		}
+
+		////Detect people blobs using an hysteresis threshold and a component labelling (on the RMPSpace)
+		//static void detectCC(Mat& bw, Person* dtctPpl, int& ttl_dtctPpl, const PointMapping* pntsMap, int ttlPnts, Mat& debugImg, int debug, int frames, int debugFrame)
+		//{
+		//	Mat imgCpy = Mat(bw.size(), CV_8UC1);
+		//	Mat cpy = Mat(bw.size(), CV_8UC1);
+		//	Utils::convert16to8(&bw, imgCpy); //convert the image to a range between 0-255. And also inverts the values, so 0 belongs to high values in viceversa
+
+		//	//Create a binary image
+		//	threshold(imgCpy, cpy, 254, 1, THRESH_BINARY); //backround = 1, foreground = 0;
+
+		//	//find connected components
+		//	std::vector < std::vector<cv::Point2i > > blobs;
+		//	findBlobs(cpy, blobs);
+
+		//	//for each region calculate mean and covariance
+		//	vector<vector<Point2i>>::iterator iter = blobs.begin();
+		//	double x, y, xx, yy, ww;
+		//	float range,alpha, rr, aa;
+
+
+		//	uchar* bwcpy_data = (uchar*)imgCpy.data;
+		//	int bwcpy_step = imgCpy.step/sizeof(uchar);
+		//	int bwcpy_cols = imgCpy.cols;
+		//	ushort* bw_data =(ushort*) bw.data;
+		//	int bw_step = bw.step/sizeof(ushort);
+		//	int bw_cols = bw.cols;
+
+		//	int idPers = 0;
+		//	while (iter != blobs.end())
+		//	{
+		//		bool pass = false;
+		//		vector<Point2i> b = *iter;
+		//		//if (b.size() > 10) //rejection of small regions
+		//		{
+		//			x = y = xx = yy = ww = 0;
+		//			int maxI = b.size();
+		//			for (int i = 0; i < maxI; i++)
+		//			{
+		//				Point2i p = b[i];
+		//			
+		//				float rangeTmp = (bw.rows-p.y)*RANGE_STEP; //binSize
+		//				float thresh;
+		//				if (rangeTmp > 4333)
+		//					thresh = -0.46*rangeTmp+5500;
+		//				else if (rangeTmp <= 4333 && rangeTmp > 3750)
+		//					thresh = -2*rangeTmp + 14000;
+		//				else
+		//					thresh = 0.6*rangeTmp+5500;
+	
+		//				int w = (bw_data + p.y*bw_step)[p.x];
+		//				if (w > thresh) //check that there is at least one pixel that get the higher threshold
+		//						pass = true;
+
+		//				x += (p.x*w);
+		//				y += (p.y*w);
+		//				ww += w;
+		//				xx += p.x*p.x*w;
+		//				yy += p.y*p.y*w; 
+		//			}
+		//			if (pass)
+		//			{
+		//				Person* prs = &dtctPpl[ttl_dtctPpl++];
+		//				initPerson(prs);
+		//				prs->mean_RPS = Point(x/ww, y/ww);
+		//				prs->id = idPers++;
+		//				
+		//				double mRpSX = x/ww;
+		//				double mRpSY = y/ww;
+
+		//				double vx1 = xx/ww - (mRpSX*mRpSX);
+		//				double vy1 = yy/ww - (mRpSY*mRpSY);
+
+		//				float vx = xx/ww - powf(prs->mean_RPS.x,2);
+		//				float vy = yy/ww - powf(prs->mean_RPS.y,2);
+		//				if (vx > 0 && vy > 0)
+		//				{
+		//					prs->sigmaX_RPS = sqrt(vx1);
+		//					prs->sigmaY_RPS = sqrt(vy1);
+		//					//double covVals[] = {vx1, 0, 0, vy1};
+		//					//prs->sigmaRPS_inv = Mat(2,2, CV_32F, covVals);
+		//				}
+		//				else
+		//				{
+		//					outDebugFile << "detectionCC: Error sigma. Negative value inside square root" << endl;
+		//				
+		//					xx = yy = 0;
+		//					for (int i = 0; i < maxI; i++)
+		//					{
+		//						int rpX = b[i].x;
+		//						int rpY = b[i].y;
+		//					
+		//						//debug 
+		//						if (debug > DEBUG_MED)//ONLY points that surpass the higher threshold are drawn in yellow
+		//						{
+		//							debugImg.ptr<uchar>(rpY)[rpX*3] = 0;
+		//							debugImg.ptr<uchar>(rpY)[rpX*3+1] = 255;
+		//							debugImg.ptr<uchar>(rpY)[rpX*3+2] = 255;
+		//						
+		//						}
+		//						int w = (bwcpy_data + rpY*bwcpy_step)[rpX];	
+		//						outDebugFile << rpX << " " << rpY << " " << w  << ";"<< endl;
+		//					
+		//						xx += w*powf(rpX-prs->mean_RPS.x,2);
+		//						yy += w*powf(rpY-prs->mean_RPS.y,2);
+		//					}
+		//					prs->sigmaY_RPS = sqrtf(yy/ww);
+		//					prs->sigmaX_RPS = sqrtf(xx/ww);
+		//					outDebugFile << "end " << endl;
+		//				}
+
+		//				projectLocation2MoA(prs, debug, frames, debugFrame);
+
+		//			/*	if (frames == debugFrame && prs->id == 0)
+		//				{
+		//					outDebugFile << "Colour model at frame " << frames << endl;
+		//					for (int k = 0; k < MODEL_NBINS; k++)
+		//					{
+		//						//outDebugFile << (float)prs->heightModel[k] << " " << (int)prs->colourModel[k](0) << " " << (int)prs->colourModel[k](1) << " " << (int)prs->colourModel[k](2) << endl;
+		//						outDebugFile << (float)prs->heightModel[k] << " " << (int)prs->colourModel[k].mean(0) << " " << (int)prs->colourModel[k].mean(1) << " " << (int)prs->colourModel[k].mean(2) << endl;
+		//					}
+		//				}*/
+		//			}
+		//		}
+		//		iter++;
+		//	}
+
+		//}
 
 
 		//Detect people blobs using an hysteresis threshold and a component labelling (on the RMPSpace)
@@ -543,13 +776,17 @@ namespace PplDtcV1
 			threshold(imgCpy, cpy, 254, 1, THRESH_BINARY); //backround = 1, foreground = 0;
 
 			//find connected components
-			std::vector < std::vector<cv::Point2i > > blobs;
+			std::vector < std::vector<cv::Point2d > > blobs;
 			findBlobs(cpy, blobs);
-
 			//for each region calculate mean and covariance
-			vector<vector<Point2i>>::iterator iter = blobs.begin();
-			float x, y, xx, yy, ww;
+			vector<vector<Point2d>>::iterator iter = blobs.begin();
+			double x, y, xx, yy, ww;
 			float range,alpha, rr, aa;
+
+
+			uchar* bwcpy_data = (uchar*)imgCpy.data;
+			int bwcpy_step = imgCpy.step/sizeof(uchar);
+			int bwcpy_cols = imgCpy.cols;
 
 			ushort* bw_data =(ushort*) bw.data;
 			int bw_step = bw.step/sizeof(ushort);
@@ -559,14 +796,14 @@ namespace PplDtcV1
 			while (iter != blobs.end())
 			{
 				bool pass = false;
-				vector<Point2i> b = *iter;
+				vector<Point2d> b = *iter;
 				//if (b.size() > 10) //rejection of small regions
 				{
 					x = y = xx = yy = ww = 0;
 					int maxI = b.size();
 					for (int i = 0; i < maxI; i++)
 					{
-						Point2i p = b[i];
+						Point2d p = b[i];
 					
 						float rangeTmp = (bw.rows-p.y)*RANGE_STEP; //binSize
 						float thresh;
@@ -577,55 +814,77 @@ namespace PplDtcV1
 						else
 							thresh = 0.6*rangeTmp+5500;
 	
-						int w = (bw_data + p.y*bw_step)[p.x];
-						if (w > thresh) //check that there is at least one pixel that get the higher threshold
-								pass = true;
+						int w = (bwcpy_data + (int)p.y*bwcpy_step)[(int)p.x];
+						int w1 = (bw_data + (int)p.y*bw_step)[(int)p.x];
+						if (w1 > thresh) //check that there is at least one pixel that get the higher threshold
+							pass = true;
+
 
 						x += (p.x*w);
 						y += (p.y*w);
 						ww += w;
+						xx += p.x*p.x*w;
+						yy += p.y*p.y*w; 
+
+						//Create the appearance model here
 					}
 					if (pass)
-					{
+					{	
 						Person* prs = &dtctPpl[ttl_dtctPpl++];
 						initPerson(prs);
-						prs->mean_RPS = Point(x/ww, y/ww);
+						prs->mean_RPS = Point2d(x/ww, y/ww);
 						prs->id = idPers++;
-						for (int i = 0; i < maxI; i++)
+
+						double mRpSX = x/ww;
+						double mRpSY = y/ww;
+
+						double vx1 = xx/ww - (mRpSX*mRpSX);
+						double vy1 = yy/ww - (mRpSY*mRpSY);
+
+						float vx = xx/ww - powf(prs->mean_RPS.x,2);
+						float vy = yy/ww - powf(prs->mean_RPS.y,2);
+						if (vx > 0 && vy > 0)
 						{
-							int rpX = b[i].x;
-							int rpY = b[i].y;
-							//debug 
-							if (debug > DEBUG_MED)//ONLY points that surpass the higher threshold are drawn in yellow
-							{
-								debugImg.ptr<uchar>(rpY)[rpX*3] = 0;
-								debugImg.ptr<uchar>(rpY)[rpX*3+1] = 255;
-								debugImg.ptr<uchar>(rpY)[rpX*3+2] = 255;
-							}
-							int w = (bw_data + rpY*bw_step)[rpX];				
-							xx += w*powf(rpX-prs->mean_RPS.x,2);
-							yy += w*powf(rpY-prs->mean_RPS.y,2);
+							prs->sigmaX_RPS = sqrt(vx1);
+							prs->sigmaY_RPS = sqrt(vy1);
 						}
-						prs->sigmaY_RPS = sqrtf(yy/ww);
-						prs->sigmaX_RPS = sqrtf(xx/ww);
+						else
+						{
+							outDebugFile << "detectionCC: Error sigma. Negative value inside square root" << endl;
+						
+							xx = yy = 0;
+							for (int i = 0; i < maxI; i++)
+							{
+								int rpX = b[i].x;
+								int rpY = b[i].y;
+							
+								//debug 
+								if (debug > DEBUG_MED)//ONLY points that surpass the higher threshold are drawn in yellow
+								{
+									debugImg.ptr<uchar>(rpY)[rpX*3] = 0;
+									debugImg.ptr<uchar>(rpY)[rpX*3+1] = 255;
+									debugImg.ptr<uchar>(rpY)[rpX*3+2] = 255;
+								
+								}
+								int w = (bwcpy_data + rpY*bwcpy_step)[rpX];	
+								outDebugFile << rpX << " " << rpY << " " << w  << ";"<< endl;
+							
+								xx += w*powf(rpX-prs->mean_RPS.x,2);
+								yy += w*powf(rpY-prs->mean_RPS.y,2);
+							}
+							prs->sigmaY_RPS = sqrtf(yy/ww);
+							prs->sigmaX_RPS = sqrtf(xx/ww);
+							outDebugFile << "end " << endl;
+						}
 
 						projectLocation2MoA(prs, debug, frames, debugFrame);
-
-					/*	if (frames == debugFrame && prs->id == 0)
-						{
-							outDebugFile << "Colour model at frame " << frames << endl;
-							for (int k = 0; k < MODEL_NBINS; k++)
-							{
-								//outDebugFile << (float)prs->heightModel[k] << " " << (int)prs->colourModel[k](0) << " " << (int)prs->colourModel[k](1) << " " << (int)prs->colourModel[k](2) << endl;
-								outDebugFile << (float)prs->heightModel[k] << " " << (int)prs->colourModel[k].mean(0) << " " << (int)prs->colourModel[k].mean(1) << " " << (int)prs->colourModel[k].mean(2) << endl;
-							}
-						}*/
+						
 					}
 				}
 				iter++;
 			}
-
 		}
+
 
 		/*
 		img : Mat(500,181, CV_16UC1)
@@ -737,9 +996,114 @@ namespace PplDtcV1
 			}
 			return out;
 		}
+				
+		
+		static void printValuesF(const Mat* m, char* title, ostream& out)
+		{
+			out << title << endl;
+			for (int i = 0; i < m->rows; i++)
+			{
+				const float* ptr = m->ptr<float>(i);
+				for (int j = 0; j < m->cols; j++)
+				{
+					out << (float)ptr[j] << " ";
+				}
+				out << endl;
+			}
+			out << endl;
+		}
 
-		//Display detection in both RPS and MoA
-		static void displayDetections(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar, Person* pastPpl, int ttlPastppl, Mat& moa, int debug)
+
+		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color)
+		{
+			SVD svd(cov);
+			float bigAxis = sqrtf(svd.w.at<float>(0))*2;
+			float smallAxis = sqrtf(svd.w.at<float>(1))*2;
+
+			//identify the quadrant of the main eigenvector
+			bool upperQuadrant = (svd.u.at<float>(1,0) > 0);
+			Mat bigEigenVct = svd.u(Rect(0,0, 1,2));
+			float vals[] = {1, 0};
+			Mat mainAxis = Mat(2,1, CV_32F, vals);
+			float dotPrd = bigEigenVct.dot(mainAxis);
+			float angle = acosf(dotPrd)*180/CV_PI;
+			if (!upperQuadrant)
+				angle = -angle;
+
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);		
+		}
+
+		static void drawPersonPointsCov_debug(const Person& p, Mat* moa, Scalar color)
+		{
+			Point pntMean = Point(p.stateMoA.at<float>(0,0),p.stateMoA.at<float>(1,0));
+			SVD svd(p.covMoA_points);
+			printValuesF(&p.covMoA_points, "Covariance matrix", cout);
+			printValuesF(&svd.u, "Eigen vectors (U)", cout);
+			printValuesF(&svd.w, "Eigen values (W)", cout);
+			printValuesF(&svd.vt, "Eigen vectors (Vt)", cout);
+	
+			float bigAxis = sqrtf(svd.w.at<float>(0))*2;
+			float smallAxis = sqrtf(svd.w.at<float>(1))*2;
+
+			//identify the quadrant of the main eigenvector
+			bool upperQuadrant = (svd.u.at<float>(1,0) > 0);
+			Mat bigEigenVct = svd.u(Rect(0,0, 1,2));
+			printValuesF(&bigEigenVct, "Biggest Eigen Vector", cout);
+			float vals[] = {1, 0};
+			Mat mainAxis = Mat(2,1, CV_32F, vals);
+			float dotPrd = bigEigenVct.dot(mainAxis);
+			//float normBigEigen = norm(bigEigenVct);
+			float angle = acosf(dotPrd)*180/CV_PI;
+			if (upperQuadrant)
+				angle = -angle;
+
+
+			//float angle = atanf(bigAxisY/bigAxisX)*180/CV_PI;
+
+			//float bigAxisMag = svd.w.at<float>(0);
+			//float smallAxisMag = svd.w.at<float>(1);
+
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);		
+		}
+
+		/*
+		activityMap(out): Updates the positions where the 3D points project.
+		actimityMap_back(out): With the background
+		featureSpace(out): Feature space of colour and height. Modelled over a plan view
+		am(in): 
+		p3D(in): List of foreground points for a particular kinect
+		nP(in): Number of foreground points.
+		points2D(in): List of 2D points of the image plane for a particular kinect
+		rgbMap(in): Map of rgb colours for a particular kinect
+		*/
+		static void updateActivityMap(Mat& activityMap, Mat& activityMap_back, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D)
+		{
+			for (int i = 0; i < nP; i++)
+			{
+				Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D[i], MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+
+				if (p2D.x != -1)
+				{
+					uchar* ptr = activityMap.ptr<uchar>(p2D.y);
+					uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
+
+					ptr[3*p2D.x] = ptr_back[3*p2D.x] = 0;
+					ptr[3*p2D.x+1] = ptr_back[3*p2D.x+1] = 0;
+					ptr[3*p2D.x+2] = ptr_back[3*p2D.x+2] = 0;
+				}
+				//else
+				//{
+				//	if (debug > DEBUG_NONE)
+				//		outDebugFile << "UpdateActivityMap: BAD PROJECTION (MoA). Info: 3DPoint: " << p3D[i].X <<", "<< p3D[i].Y << ", " << p3D[i].Z <<
+				//		"MAX_RANGE: " << MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
+				//		". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+				//}
+			}
+		}
+
+
+
+		static void displayDetections(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar, Mat& moa, int debug)
 		{
 			for (int iter = 0; iter < ttl_trckPpl; iter++)
 			{
@@ -755,6 +1119,54 @@ namespace PplDtcV1
 					Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
 					cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
 
+					/*Scalar color = Scalar(255,0,0);
+					float sgX = sqrtf(p->covMoA.at<float>(0,0));
+					float sgY = sqrtf(p->covMoA.at<float>(1,1));
+					float area = sgX*sgY;
+					if (area > 100 && area < 800) 
+						color = Scalar(0,255,0);
+					else if (area > 800)
+						color = Scalar(0,0,255);*/
+
+					Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
+					drawPersonPointsCov_debug(pntMean, p->covMoA_points, &moa, Scalar(0,255,0));
+
+				}
+			}
+		}
+		//Display detection in both RPS and MoA
+		static void displayDetections(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar, Person* pastPpl, int ttlPastppl, Mat& moa, int debug)
+		{
+			for (int iter = 0; iter < ttl_trckPpl; iter++)
+			{
+				const Person* p = &(trckPpl[iter]);
+				if (p->lost == 0)
+				{
+					if (debug > DEBUG_NONE)
+					{
+						cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
+						
+						float vals[] = {powf(p->sigmaX_RPS,2), 0, 0, powf(p->sigmaY_RPS, 2)};
+						Mat covRPS = Mat(2,2, CV_32F, vals);
+						SVD svd(covRPS);
+						float vals2[] = {1, 0};
+						Mat dirVctr = Mat(2,1, CV_32F, vals2);
+						Mat bigEigenVct = svd.u(Rect(0,0, 1,2));
+						float angle = acosf(dirVctr.dot(bigEigenVct))*180/CV_PI;
+						bool upperQuadrant = (svd.u.at<float>(1,0) > 0);
+						if (upperQuadrant)
+							angle = -angle;
+
+						float bigAxis = sqrtf(svd.w.at<float>(0))*2;
+						float smallAxis = sqrtf(svd.w.at<float>(1))*2;
+						cv::ellipse(remapPolar, p->mean_RPS, Size(bigAxis, smallAxis), angle,0,360, Scalar::all(0));
+					//cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
+						//cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
+					}
+
+					Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
+					cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
+
 					Scalar color = Scalar(255,0,0);
 					float sgX = sqrtf(p->covMoA.at<float>(0,0));
 					float sgY = sqrtf(p->covMoA.at<float>(1,1));
@@ -764,7 +1176,11 @@ namespace PplDtcV1
 					else if (area > 800)
 						color = Scalar(0,0,255);
 
-					int bigAxis = 20*DEPTH_SCALE;
+					Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
+					drawPersonPointsCov_debug(pntMean, p->covMoA_points, &moa, Scalar(0,255,0));
+
+					//drawPersonPointsCov_debug(*p, &moa, color);
+			/*		int bigAxis = 20*DEPTH_SCALE;
 					int smallAxis = 10*DEPTH_SCALE;
 
 					Point vel = findNearestPoint(meanMoA, pastPpl, ttlPastppl); 
@@ -782,7 +1198,7 @@ namespace PplDtcV1
 					}
 
 					cv::ellipse(moa, meanMoA, Size(bigAxis, smallAxis), -angle, 0, 360, color,-1);
-					cv::circle(moa, meanMoA, 0.8*smallAxis, Scalar(0,0,0), -1);
+					cv::circle(moa, meanMoA, 0.8*smallAxis, Scalar(0,0,0), -1);*/
 				}
 			}
 		}
