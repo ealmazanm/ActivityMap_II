@@ -86,8 +86,8 @@ namespace AM
 		//static const int MODEL_NBINS = (ActivityMap_Utils::CEILING_THRESHOLD-ActivityMap_Utils::FLOOR_THRESHOLD)/MODEL_BINRANGE;
 		static const int MAX_PEOPLE = 60;
 
-		static float meas_std = 10;
-		static float proc_std = 1;
+		static float meas_std = 1;
+		static float proc_std = 30;
 		static const int MAX_POINTS_BIN = 20000;
 		struct gaussianParam
 		{
@@ -100,11 +100,12 @@ namespace AM
 			//int totalColours;
 		};
 
+
 		struct Person
 		{
 			int id;
 			Mat stateMoA;
-			Mat covMoA;
+			Mat stateUncertainty;
 			Mat covMoA_points;
 			Point2d  mean_RPS;
 			double sigmaY_RPS;
@@ -113,6 +114,7 @@ namespace AM
 			Mat R;
 			Mat Q;
 			Mat A; 
+			Mat K; //Kalman gain for debuggin
 	
 			float heightModel[MODEL_NBINS];
 			gaussianParam colourModel[MODEL_NBINS];
@@ -134,6 +136,12 @@ namespace AM
 			Point meanMoA2;
 			Point meanDtction;
 			Mat covDtction;
+			XnPoint3D mean3D;
+			float euclThresh;
+			float range3D;//probably not needed
+			Mat rotation; //matrix that rotates a covariance matrix depending on its mean position in the MoA
+			Mat stateUn_noupdate;
+			Point mean_noupdate;
 
 		};
 
@@ -149,11 +157,18 @@ namespace AM
 			int idPerson;
 		};
 
+		//Function parameters
+		//Euclidean threshold for the gatting volume
+		static float gateEuclidean[] = {0.05, 0.038};
+
 	//Tracking variables
+		static const float MEASUREMENT_ERROR = 400; //it will be down scale to a maximum of 45%
+		static const float PROCESS_ERROR = 50;
 		static const int DTC_FULL = 0;
 		static const int DTC_MERGE = 1;
 		static const int DTC_SPLIT = 2;
 		static const int TRACKLOST_THRESHOLD = 10;
+		static const int EUCLIDEAN_THRESHOLD = 150;
 		//Update linear model
 		static float valsH[] = {1, 0, 0, 0, 0, 1, 0, 0};
 		static Mat H = Mat(2,4, CV_32F, valsH);
@@ -298,7 +313,7 @@ namespace AM
 		{
 			outDebugFile << "********** Track id: " << p->id;
 			Utils::printValuesF(&p->stateMoA, "State MoA", outDebugFile);
-			Utils::printValuesF(&p->covMoA, "Cov MoA", outDebugFile);
+			Utils::printValuesF(&p->stateUncertainty, "Cov MoA", outDebugFile);
 			//Utils::printValuesF(&p->gtArea, "Gating area" , outDebugFile);
 			Utils::printValuesF(&p->A , "Prediction model (A)", outDebugFile);
 			Utils::printValuesF(&p->Q, "Prediction error covariance (Q)", outDebugFile);
@@ -542,27 +557,34 @@ namespace AM
 		*/
 		static void initPerson(Person* p, int debug)
 		{
-			//first iteration the measruemente is trusted 100%
-			float valsR[] = {powf(meas_std,2),0,0,powf(meas_std,2)};
-			Mat m = Mat(2,2, CV_32F, valsR);
-			m.copyTo(p->R);
+			p->euclThresh = EUCLIDEAN_THRESHOLD;
+
 			//Covariance of the prediction error
 			//first iteration the prediction model is trusted 0%
-			float valsQ[] = {1.,0,0,0,   0,1.,0,0,  0,0,1.,0,  0,0,0,1.};
-			m = Mat(4,4, CV_32F, valsQ);
-			m = m*proc_std;
+			float valsQ[] = {1,0,0,0,   0,1,0,0,  0,0,1,0,  0,0,0,1};
+			Mat m = Mat(4,4, CV_32F, valsQ);
+			m = m*PROCESS_ERROR;
 			m.copyTo(p->Q);
+			m.copyTo(p->stateUn_noupdate);
+
+			float valsR[] = {1,0,0,1};
+			m = Mat(2,2, CV_32F, valsR);
+			m = m*MEASUREMENT_ERROR;
+			m.copyTo(p->R);
 
 			//Prediction linear model
 			float valsA[] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1};
-			m = Mat(4,4, CV_32F, valsA);
-			m.copyTo(p->A);
-
-			p->stateMoA = Mat::zeros(4,1,CV_32F);
-			p->covMoA = Mat::zeros(4,4, CV_32F);
+			Mat(4,4, CV_32F, valsA).copyTo(p->A);
+			
+			//p->stateMoA = Mat::zeros(4,1,CV_32F);
+			float valState[] = {0, 0, 0, 0};
+			Mat(4,1,CV_32F, valState).copyTo(p->stateMoA);
+			p->stateUncertainty = Mat::zeros(4,4, CV_32F);
 			p->covMoA_points = Mat::zeros(2,2,CV_32F);
-			p->R.copyTo(p->covMoA(Rect(0,0, 2,2)));
-			p->Q(Rect(2,2,2,2)).copyTo(p->covMoA(Rect(2,2,2,2)));
+	
+
+			
+
 
 			p->control = DTC_FULL;
 			p->lost = 0;
@@ -597,15 +619,9 @@ namespace AM
 				printValuesF(&p->R, "R(init)", outDebugFile);
 				printValuesF(&p->Q, "Q(init)", cout);
 				printValuesF(&p->A, "A(init)", cout);
-				printValuesF(&p->covMoA, "CovMoa(init)", cout);
+				printValuesF(&p->stateUncertainty, "CovMoa(init)", cout);
 			}
-
-			p->covMoA2 = Mat::zeros(2,2,CV_32F);;
-
-			
-			
-			
-
+			p->covMoA2 = Mat::zeros(2,2,CV_32F);
 		}
 
 		static void projectCovariance_Jacob(Person* prs)
@@ -629,9 +645,9 @@ namespace AM
 			//Covariance approximation in the plan view MoA
 			Mat covCartessian = jacobMat * covPolar * jacobMat.t();
 
-			printValuesF(&covCartessian, "CovCartessian_Jacob" , cout);
+			//printValuesF(&covCartessian, "CovCartessian_Jacob" , cout);
 
-			covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
+			covCartessian.copyTo(prs->stateUncertainty(Rect(0,0,2,2)));
 			covCartessian.copyTo(prs->covMoA_points);
 			//To keep detection values
 			covCartessian.copyTo(prs->covDtction);
@@ -657,26 +673,40 @@ namespace AM
 			Mat R;
 			float meanTheta_rad = prs->mean_RPS.x*CV_PI/180;
 			float cosTheta = cosf(meanTheta_rad);
-			if (meanTheta_rad < (CV_PI/2)) //clockwise rotation
-			{				
-				float vals[] = {cosTheta, -sinf(meanTheta_rad), sinf(meanTheta_rad), cosTheta}; 
-				R = Mat(2,2, CV_32F, vals);
-			}
-			else //counterclockwise rotation
-			{
-				float vals[] = {cosTheta, sinf(meanTheta_rad), -sinf(meanTheta_rad), cosTheta}; 
-				R = Mat(2,2, CV_32F, vals);
-			}
+			float vals[] = {cosTheta, sinf(meanTheta_rad), -sinf(meanTheta_rad), cosTheta}; 
+			R = Mat(2,2, CV_32F, vals);
+			R.copyTo(prs->rotation);
+			
+			//printValuesF(&prs->rotation, "Rotation I", outDebugFile);
 
 			Mat covCartessian = R*covMoA*R.t();
 
 			//printValuesF(&covCartessian, "CovCartessian_var" , cout);
 
-			covCartessian.copyTo(prs->covMoA(Rect(0,0,2,2)));
+			covCartessian.copyTo(prs->stateUncertainty(Rect(0,0,2,2)));
 			covCartessian.copyTo(prs->covMoA_points);
 			//To keep detection values
 			covCartessian.copyTo(prs->covDtction);
 
+		}
+
+		static void setTimeVariantParameters(Person* prs, int debug, int frames)
+		{
+			float range = sqrtf(pow(prs->mean3D.X,2) + pow(prs->mean3D.Z,2));
+			float scale = ((0.33*log(10+3*range/1000))-0.80597);
+			//float scale = gateEuclidean[0] + gateEuclidean[1]*(range/1000);
+			//first iteration the measruemente is trusted 100%
+			//float valsR[] = {powf(meas_std,2),0,0,powf(meas_std,2)};
+			float valsR[] = {MEASUREMENT_ERROR*scale,0,0,40};
+			Mat m = Mat(2,2, CV_32F, valsR);
+			//printValuesF(&prs->rotation, "Rotation matrix II", outDebugFile);
+			Mat s = (prs->rotation*m*prs->rotation.t());
+
+			//m = m*MEASUREMENT_ERROR*scale;
+			s.copyTo(prs->R);
+			prs->range3D = range; //probably not needed
+
+			prs->euclThresh = scale*EUCLIDEAN_THRESHOLD;
 		}
 
 
@@ -686,15 +716,15 @@ namespace AM
 			//Mean projection to MoA
 			Point cMoA;
 			cMoA = convertBack(&prs->mean_RPS);
-			XnPoint3D p3D;
-			p3D.X = cMoA.x; p3D.Y = MODEL_MAX_HEIGHT - 1; p3D.Z = cMoA.y;
-			Point meanMoA = ActivityMap_Utils::findMoACoordinate(&p3D, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+			//XnPoint3D p3D;
+			prs->mean3D.X = cMoA.x; prs->mean3D.Y = MODEL_MAX_HEIGHT - 1; prs->mean3D.Z = cMoA.y;
+			Point meanMoA = ActivityMap_Utils::findMoACoordinate(&prs->mean3D, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
 			if (meanMoA.x == -1)
 			{
 				if (debug > DEBUG_NONE)
 				{
 					outDebugFile << "ProjectLocation: person located out of MoA range. INFO: RPS point: " << meanMoA.x << ", " << meanMoA.y <<
-						". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(p3D.X,2) + pow(p3D.Z,2)) <<". MAX_RANGE: " << 
+						". 3D MoA point: " << cMoA.x << ", " << cMoA.y << ". Range: " << sqrtf(pow(prs->mean3D.X,2) + pow(prs->mean3D.Z,2)) <<". MAX_RANGE: " << 
 						MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << MODEL_MAX_HEIGHT << 
 						". FLOOR_THRESH: " << MODEL_MIN_HEIGHT << endl;
 				}
@@ -1079,12 +1109,12 @@ namespace AM
 						totalSubIntervalsDetection[PROJECT2MOA_ID] += clock() - startTime;
 
 						//debug to get the location in the MoA by mapping all the points
-						if (debug >= DEBUG_NONE )//&& prs->id == 0)
+						if (debug >= DEBUG_NONE)//&& prs->id == 0)
 						{
 							mapPointsMoA(b, prs, imgCpy, debug, frames, debugFrame);
-						/*	outDebugFile << "Distribution parameters (mapped)" << endl;
+							/*outDebugFile << "Distribution parameters (mapped)" << endl;
 							printValuesF(&prs->stateMoA, "Mean MoA", outDebugFile);
-							printValuesF(&prs->covMoA, "Cov MoA" , outDebugFile);
+							printValuesF(&prs->stateUncertainty, "Cov MoA" , outDebugFile);
 							outDebugFile << "Distribution parameters (points mapping) " << endl;
 							outDebugFile << "Mean: " << prs->meanMoA2.x << ", " << prs->meanMoA2.y << endl;
 							printValuesF(&prs->covMoA2, "Cov Moa 2 " , outDebugFile);
@@ -1237,8 +1267,8 @@ namespace AM
 					cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
 
 					Scalar color = Scalar(255,0,0);
-					float sgX = sqrtf(p->covMoA.at<float>(0,0));
-					float sgY = sqrtf(p->covMoA.at<float>(1,1));
+					float sgX = sqrtf(p->stateUncertainty.at<float>(0,0));
+					float sgY = sqrtf(p->stateUncertainty.at<float>(1,1));
 					float area = sgX*sgY;
 					if (area > 100 && area < 800) 
 						color = Scalar(0,255,0);
@@ -1419,8 +1449,8 @@ namespace AM
 		}
 
 	//TRACKING FUNCTIONS
-		//static void drawPersonPointsCov_debug(const Person& p, Mat* moa, Scalar color)
-		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color)
+		//static void drawPersonPointsCov_debug(const Perso&n p, Mat* moa, Scalar color)
+		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color, int thickness)
 		{
 			SVD svd(cov);
 	
@@ -1434,17 +1464,24 @@ namespace AM
 			Mat mainAxis = Mat(2,1, CV_32F, vals);
 			float dotPrd = bigEigenVct.dot(mainAxis);
 			float angle = acosf(dotPrd)*180/CV_PI;
-			if (!upperQuadrant)
-				angle = -angle;
+			//Check the reason
+			//if (pntMean.x < moa->cols/2)
+			//{
+			//	if (!upperQuadrant)
+			//		angle = -angle;
+			//}
+			//else
+				if (!upperQuadrant)
+					angle = -angle;
 
-			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);		
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness);		
 		}
 
 
 		static void drawPersonCov_debug(const Person& p, Mat* moa, Scalar color)
 		{
 			Point pntMean = Point(p.stateMoA.at<float>(0,0),p.stateMoA.at<float>(1,0));
-			SVD svd(p.covMoA(Rect(0,0,2,2)));
+			SVD svd(p.stateUncertainty(Rect(0,0,2,2)));
 			/*printValuesF(&svd.u, "Eigen vectors (U)", outDebugFile);
 			printValuesF(&svd.w, "Eigen values (W)", outDebugFile);
 			printValuesF(&svd.vt, "Eigen vectors (Vt)", outDebugFile);*/
@@ -1460,21 +1497,29 @@ namespace AM
 			cv::ellipse(*moa, pntMean, Size(bigAxisMag, smallAxisMag), angle, 0, 360, color, 3);	
 		}
 
-		static void displayDetections(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar, Mat& moa, int debug)
+		static void displayDetections(Person* dtctPpl, int ttl_dtctPpl, Mat& remapPolar, Mat& moa, int debug)
 		{
-			for (int iter = 0; iter < ttl_trckPpl; iter++)
+			for (int iter = 0; iter < ttl_dtctPpl; iter++)
 			{
-				const Person* p = &(trckPpl[iter]);
-				if (p->lost == 0)
+				const Person* p = &(dtctPpl[iter]);
+					
+				Scalar color;
+				
+				if (p->control == DTC_FULL)
+					color = Scalar(255,0,0);
+				else if (p->control == DTC_MERGE)
+					color = Scalar(0,0,255);
+				
+//				if (p->lost == 0)
 				{
-					if (debug > DEBUG_NONE)
+					if (debug > DEBUG_MED)
 					{
 						cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
 						cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
 					}
 
-					Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
-					cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
+					//Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
+					//cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
 
 					/*Scalar color = Scalar(255,0,0);
 					float sgX = sqrtf(p->covMoA.at<float>(0,0));
@@ -1485,8 +1530,8 @@ namespace AM
 					else if (area > 800)
 						color = Scalar(0,0,255);*/
 
-					Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
-					drawPersonPointsCov_debug(pntMean, p->covMoA_points, &moa, Scalar(0,255,0));
+					//Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
+					//drawPersonPointsCov_debug(pntMean, p->covMoA_points, &moa, Scalar(0,0,255), 1);
 
 					//Display the mapping of the rps points along with the ellipse of the distribution
 					int ttl = p->moAPoints.size();
@@ -1494,9 +1539,9 @@ namespace AM
 					{
 						Point pnt = p->moAPoints[i];
 						uchar* ptr = moa.ptr<uchar>(pnt.y);
-						ptr[3*pnt.x] = 0;
-						ptr[3*pnt.x+1] = 0;
-						ptr[3*pnt.x+2] = 255;
+						ptr[3*pnt.x] = color.val[0];
+						ptr[3*pnt.x+1] = color.val[1];
+						ptr[3*pnt.x+2] = color.val[2];
 					}
 				}
 			}
@@ -1508,12 +1553,12 @@ namespace AM
 				const Person* p = &(trckPpl[iter]);
 				float vals[] = {powf(p->sigmaX_RPS,2), 0, 0, powf(p->sigmaY_RPS, 2)};
 				Mat covRPS = Mat(2,2, CV_32F, vals);
-				drawPersonPointsCov_debug(p->mean_RPS, covRPS, &remapPolar, Scalar(0,255,0));
+				drawPersonPointsCov_debug(p->mean_RPS, covRPS, &remapPolar, Scalar(0,255,0),1);
 				cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
 			}
 		}
 
-		static void displayTrackersMoA(Person* trckPpl, int ttl_trckPpl, Mat& moa, int debug)
+		static void displayTrackersMoA(Person* trckPpl, int ttl_trckPpl, Mat& moa, int debug, int frames)
 		{
 			for (int iter = 0; iter < ttl_trckPpl; iter++)
 			{
@@ -1522,30 +1567,68 @@ namespace AM
 				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
 				cv::circle(moa, meanMoA, 2, Scalar(255,0,0));
 
-				Scalar color = Scalar(255,0,0);
+				Scalar color = Scalar(255,0,0); //occluded blob
 				if (p->lost > 0)
-					color = Scalar(127,127,127);
-				else
+					color = Scalar(0,0,0);
+				//else
 				{
-					double sgX = sqrt(p->covMoA_points.at<float>(0,0));
-					double sgY = sqrt(p->covMoA_points.at<float>(1,1));
-					double area = sgX*sgY;
-					if (area > 100 && area < 800) 
+					//double sgX = sqrt(p->covMoA_points.at<float>(0,0));
+					//double sgY = sqrt(p->covMoA_points.at<float>(1,1));
+					//double area = 4*p->sigmaX_RPS*p->sigmaY_RPS;
+					//outDebugFile << area << " " << p->mean_RPS.y << endl;
+					//double area = sgX*sgY;
+					//float thresh = 330 - 0.694*p->mean_RPS.y;
+					//if (area < 85) // single target blob
+					//	color = Scalar(0,255,0);
+					//else if (area >= 100) // joint blob
+					//	color = Scalar(0,0,255);
+					if (p->control == DTC_FULL)
 						color = Scalar(0,255,0);
-					else if (area > 800)
+					else if (p->control == DTC_MERGE)
 						color = Scalar(0,0,255);
 
-					//Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
-					drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, Scalar(255,0,0));
+					
 
 					//To display the ellipse of the detection in comparison with the updated tracked ellipse
 					if (debug >= DEBUG_NONE)
 					{
-						drawPersonPointsCov_debug(p->meanDtction, p->covDtction, &moa, Scalar(0,0,255));
-						cv::circle(moa, p->meanDtction, 2, Scalar(0,0,255));
-					}
+//						if (p->id == 1 && frames == 80)
+//							printValuesF(&p->stateUncertainty, "State uncertainty before drawing ellipse", outDebugFile);
+						//Associated measurement ellipse
+						//if (p->associated)
+						//	drawPersonPointsCov_debug(p->meanDtction, p->covDtction, &moa, Scalar(0,0,255), -1);
+
+						//uncertainty
+						Scalar c = Scalar(0,0,255);
+						if (!p->associated)
+							c = Scalar(0,0,0);
+						
+						//float range = sqrtf(pow(p->mean3D.X,2) + pow(p->mean3D.Z,2));
+						//float scale = ((0.33*log(10+3*range/1000))-0.80597) + 2;
+
+						drawPersonPointsCov_debug(p->mean_noupdate, p->stateUn_noupdate, &moa, Scalar(250, 0,0), 1);
+						//drawPersonPointsCov_debug(meanMoA, p->stateUncertainty, &moa, c, 1);
+
+						//The error measurement
+						//printValuesF(&p->rotation, "Rotation matrix III", outDebugFile);
+						//printValuesF(&p->R, "Error Measurement", outDebugFile);
+						//drawPersonPointsCov_debug(meanMoA, p->R, &moa, Scalar(20,20,20), 1);
+
+						//if (p->id == 0)
+						//	printValuesF(&p->stateUncertainty, "Uncertainty of the state(updated)", outDebugFile);
+
+						//The euclidean validated region
+						//Point p1 = Point(meanMoA.x-p->euclThresh, meanMoA.y - p->euclThresh);
+						//Point p2 = Point(meanMoA.x + p->euclThresh, meanMoA.y + p->euclThresh);
+						//rectangle(moa, p1, p2, Scalar::all(0));
 					
-					if (debug >= DEBUG_NONE)
+					}
+
+					//Tracking ellipse
+					//outDebugFile << area << " " << p->mean_RPS.y << endl;// <<" " << color.val[0] <<"," << color.val[1] << "," << color.val[2] << endl;
+					drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2);
+					
+					if (debug >= DEBUG_MED)
 					{
 						//drawPersonPointsCov_debug(p->meanMoA2, p->covMoA2, &moa, Scalar::all(0));
 						//Display the mapping of the rps points along with the ellipse of the distribution
@@ -1554,9 +1637,9 @@ namespace AM
 						{
 							Point pnt = p->moAPoints[i];
 							uchar* ptr = moa.ptr<uchar>(pnt.y);
-							ptr[3*pnt.x] = 150;
-							ptr[3*pnt.x+1] = 155;
-							ptr[3*pnt.x+2] = 0;
+							ptr[3*pnt.x] = color.val[0];
+							ptr[3*pnt.x+1] = color.val[1];
+							ptr[3*pnt.x+2] = color.val[2];
 						}
 					}
 
@@ -1587,7 +1670,7 @@ namespace AM
 
 				char txt[15];
 				itoa(p->id, txt, 10);
-				putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.8, Scalar(0,0,0));
+				putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.8, Scalar(0,0,255));
 			}
 		}
 
@@ -1607,17 +1690,22 @@ namespace AM
 			{
 				Person* prs = &dtctPpl[i];
 		
-				float sgX = sqrtf(prs->covMoA.at<float>(0,0));
-				float sgY = sqrtf(prs->covMoA.at<float>(1,1));
-				//float area = prs->sigmaX_RPS*prs->sigmaY_RPS;
+				//float sgX = sqrtf(prs->stateUncertainty.at<float>(0,0));
+				//float sgY = sqrtf(prs->stateUncertainty.at<float>(1,1));
+				//float area = sgX*sgY;
+				float area = 4*prs->sigmaX_RPS * prs->sigmaY_RPS;
 
-				float area = sgX*sgY;
-				if (area < 50)
-					prs->control = DTC_SPLIT;
-				else if (area > 800)
-					prs->control = DTC_MERGE;
-				else
-					prs->control = DTC_FULL;
+				//outDebugFile << area << " " << prs->mean_RPS.y << endl;
+				//float thresh = 330 - 0.694*prs->mean_RPS.y;
+				if (area >= 110) // joint blob
+						prs->control = DTC_MERGE;
+				
+				//if (area < 50)
+				//	prs->control = DTC_SPLIT;
+				//else if (area > 800)
+				//	prs->control = DTC_MERGE;
+				//else
+				//	prs->control = DTC_FULL;
 			}
 		}
 
@@ -1626,25 +1714,40 @@ namespace AM
 		*/
 		static void predictState(Person*& p, int debug)
 		{
+			if (debug >= DEBUG_MED)
+			{
+				if (p->id == 1)
+				{
+					printValuesF(&p->stateMoA, "State before prediction", outDebugFile);
+					printValuesF(&p->A, "Motion model", outDebugFile);
+					Mat tt = p->A * p->stateMoA;
+					printValuesF(&tt, "State after prediction", outDebugFile);
+				}
+			}
+
 			p->stateMoA = p->A * p->stateMoA;
 
-			if (debug > DEBUG_MED)
+			if (debug >= DEBUG_MED)
 			{
-				outDebugFile << "PREDICT STATE (COVARIANCE UPDATE)" << endl;
-				Utils::printValuesF(&p->covMoA, "Covariance matrix (before prediction)", cout);
-				Utils::printValuesF(&p->A, "Prediction model (A)", outDebugFile);
-				Utils::printValuesF(&p->Q, "Error prediction cov (Q)", outDebugFile);
-				Mat tmp = p->A * p->covMoA * p->A.t();
-				Utils::printValuesF(&tmp, "(APA')", outDebugFile);
+				if (p->id == 1)
+				{
+					outDebugFile << "PREDICT STATE (COVARIANCE UPDATE)" << endl;
+					Utils::printValuesF(&p->stateUncertainty, "Covariance matrix (before prediction)", outDebugFile);
+					Utils::printValuesF(&p->A, "Prediction model (A)", outDebugFile);
+					Utils::printValuesF(&p->Q, "Error prediction cov (Q)", outDebugFile);
+					Mat tmp = p->A * p->stateUncertainty * p->A.t();
+					Utils::printValuesF(&tmp, "(APA')", outDebugFile);
+				}
 			}
 
 			//CovMoA is the covariance projected from the detection
-			p->covMoA = p->Q + p->A * p->covMoA * p->A.t();
+			if (p->associated) //from last frame. It does not increase its uncertainty if there were not measurement
+				p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
 
 			if (debug > DEBUG_MED)
 			{
 		
-				Utils::printValuesF(&p->covMoA, "Covariance matrix (after prediction)", cout);
+				Utils::printValuesF(&p->stateUncertainty, "Covariance matrix (after prediction)", cout);
 				outDebugFile << "-----------------------------------" << endl;
 			}
 		}
@@ -1803,42 +1906,85 @@ namespace AM
 		/*
 		out = (dPrs.mean - target.mean) * inv((target.gtCov + dPrs.covMoa)/2) * (dPrs.mean - target.mean)T
 		*/
-		static float mahalanobis(const Person* target, const Person* dPrs)
+		static float mahalanobis(const Mat* tgtMean, const Mat* uncertInv, const Person* dPrs)
 		{
 			//Mean diff
-			Mat tgtMean = target->stateMoA(Rect(0,0, 1,2));
 			Mat dtcMean = dPrs->stateMoA(Rect(0,0,1,2));
-			Mat meanDiff = dtcMean-tgtMean;
+			Mat meanDiff = dtcMean-(*tgtMean);
 
 			//sum covariances
-			Mat tgtCov = target->covMoA(Rect(0,0,2,2));
-			//Mat dtcCov = dPrs->covMoA(Rect(0,0,2,2));
-			//Mat avgCov = (tgtCov + dtcCov)/2;
+			Mat out = meanDiff.t() * (*uncertInv) * meanDiff;
 
-			Mat out = meanDiff.t() * tgtCov.inv() * meanDiff;
-
-			float val = sqrtf(out.at<float>(0,0));
+			float val = out.at<float>(0,0);
 
 			return val;
 
 		}
 
-		static void gateDetection(const Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person** gPpl, int& ttl_gPpl, int debug)
+		/*
+		It uses a first gating area to select the measurment closest to the target. Then chooses the measurement with the minimum
+		Mahalanobis distance
+		*/
+		static void gateDetectionNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug)
 		{
+			Mat uncert = target->stateUncertainty(Rect(0,0,2,2));
+			uncert.copyTo(target->stateUn_noupdate);
+			Mat uncertInv = uncert.inv();
+			Mat tgtMean = target->stateMoA(Rect(0,0, 1,2));
+			target->mean_noupdate.x = tgtMean.at<float>(0);
+			target->mean_noupdate.y = tgtMean.at<float>(1);
+			float maxDist = 50;
 			for (int i = 0; i < ttl_dtctPpl; i++)
 			{
 				Person* dPrs = &dtctPpl[i];
 				if (!dPrs->associated)
 				{
-					float c = mahalanobis(target, dPrs);
-					if (debug == DEBUG_MED)
+					//float eucDist = sqrtf(powf(target->stateMoA.at<float>(0,0) - dPrs->meanDtction.x, 2) + powf(target->stateMoA.at<float>(1,0) - dPrs->meanDtction.y, 2));
+					//if (eucDist < target->euclThresh)
+					//{
+					//Probably there is no need of a euclidean gate
+						float c = mahalanobis(&tgtMean, &uncertInv, dPrs);
+						if (c < 5.99 && c < maxDist) //it consider only those measurement that fall within the gating area (less than 10.597)
+						{
+							maxDist = c;
+							candidate = dPrs;
+						}
+						if (debug == DEBUG_MED)
+						{
+							outDebugFile << "Mahalanobis (tgt id: " << target->id << ". dtct id:  " << dPrs->id << "): " << c << endl;
+						}
+					//}
+				}
+			}
+
+		}
+
+		static void gateDetection(const Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person** gPpl, int& ttl_gPpl, int debug)
+		{
+			Mat uncert = target->stateUncertainty(Rect(0,0,2,2));
+			uncert.copyTo(target->stateUn_noupdate);
+			Mat uncertInv = uncert.inv();
+			Mat tgtMean = target->stateMoA(Rect(0,0, 1,2));
+			for (int i = 0; i < ttl_dtctPpl; i++)
+			{
+				Person* dPrs = &dtctPpl[i];
+				if (!dPrs->associated)
+				{
+					float eucDist = sqrtf(powf(target->stateMoA.at<float>(0,0) - dPrs->meanDtction.x, 2) + powf(target->stateMoA.at<float>(1,0) - dPrs->meanDtction.y, 2));
+					if (eucDist < target->euclThresh)
 					{
-						outDebugFile << "Mahalanobis (tgt id: " << target->id << ". dtct id:  " << dPrs->id << "): " << c << endl;
-					}
-					if (c < 10)
-					{
-						gPpl[ttl_gPpl] = dPrs;
-						ttl_gPpl++;
+						float c = mahalanobis(&tgtMean, &uncertInv, dPrs);
+						if (debug == DEBUG_MED)
+						{
+							outDebugFile << "Mahalanobis (tgt id: " << target->id << ". dtct id:  " << dPrs->id << "): " << c << endl;
+						}
+						//2.5% . If the value is bigger than 5.991 then the point has less than 5% of belonging to the person
+						cout << "Mahalanobis distance: " << c << endl;
+						if (c < 13.82)
+						{
+							gPpl[ttl_gPpl] = dPrs;
+							ttl_gPpl++;
+						}
 					}
 				}
 			}
@@ -1880,39 +2026,50 @@ namespace AM
 			delete []gPpl;
 		}
 
+		/*
+		Search from the available measurment the spatial closest.
+		1- Define a euclidean threshold
+		2- Define a gating area based on the Mahalanobis distance and the Chi square tables.
+		It selects the one with the minimum Mahalanobis distance from the ones that are inside the 
+		euclidean area.
+
+		IN:
+		Target, dtectPpl, ttl_dtctPpl
+
+		OUT:
+		candidate, compCoeff (it will be used later to decide if the appearance update is performed or not.
+		*/
+		static void associationNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug, int frames)
+		{
+			//Filter all detections within a gate region
+			gateDetectionNNeigh(target, dtctPpl, ttl_dtctPpl, candidate, debug);
+		}	
+
 
 		/*
 		Update the target state (x,y,vx,vy) from the measurement state through the kalman equations 
 		*/
-		static void updateState(Person* trgt, const Person* msr, float dComp, int debug)
+		static void updateState(Person* trgt, Person* msr, float dComp, int debug, int frames)
 		{
+	/*		if (trgt->id == 3)
+			{
+				printValuesF(&trgt->stateUncertainty, "Uncertainty of the state(After prediction and before updating)", outDebugFile);
+				printValuesF(&trgt->R, "Error Measurement", outDebugFile);
+			}*/
 			//K = 4x2 matrix
 			//Biggest R entails smallest K and viceversa
-			Mat K = trgt->covMoA * H.t() * (H * trgt->covMoA * H.t() + trgt->R).inv();
+			Mat K = trgt->stateUncertainty * H.t() * (H * trgt->stateUncertainty * H.t() + trgt->R).inv();
+			K.copyTo(trgt->K);
 
 			//2x1 location of measurement
 			Mat msreState = msr->stateMoA(Rect(0,0,1,2));
 			//2x1 location of the target
 			Mat trgtState = trgt->stateMoA(Rect(0,0,1,2));
 			//UPDATE EQUATION
-			trgt->stateMoA = trgt->stateMoA + K*(msreState - H*trgt->stateMoA);
+			trgt->stateMoA = trgt->stateMoA + trgt->K*(msreState - H*trgt->stateMoA);
 	
 			trgt->lost = 0;
-
-			//update the covariance 
-			Mat I = Mat::eye(4,4,CV_32F);
-			trgt->covMoA = (I - (K*H))*trgt->covMoA;
-
-			if (debug > DEBUG_MED)
-			{
-				outDebugFile << "UPDATE STATE" << endl;
-				Utils::printValuesF(&I, "Identity matrix", outDebugFile);
-				Utils::printValuesF(&K, "K", outDebugFile);
-				Utils::printValuesF(&H, "H", outDebugFile);
-				Utils::printValuesF(&trgt->covMoA, "Covariance Matrix", outDebugFile); 
-				Utils::printValuesF(&trgt->covMoA, "Covariance Matrix (Updated)", outDebugFile); 
-			}
-
+			trgt->associated = true;
 			//Update the location in the remap polar space
 			trgt->mean_RPS = msr->mean_RPS;
 			trgt->sigmaX_RPS = msr->sigmaX_RPS;
@@ -1926,6 +2083,33 @@ namespace AM
 			trgt->moAPoints = msr->moAPoints;
 			trgt->meanDtction = msr->meanDtction;
 			msr->covDtction.copyTo(trgt->covDtction);
+			trgt->mean3D = msr->mean3D;
+			trgt->control = msr->control;
+			msr->rotation.copyTo(trgt->rotation);
+			msr->associated = true;
+			
+
+			//update the covariance 
+			Mat I = Mat::eye(4,4,CV_32F);
+
+			if (debug >= DEBUG_MED && frames == 80)
+			{
+				outDebugFile << "UPDATE STATE" << endl;
+				Utils::printValuesF(&I, "Identity matrix", outDebugFile);
+				Utils::printValuesF(&trgt->K, "K", outDebugFile);
+				Utils::printValuesF(&H, "H", outDebugFile);
+				Utils::printValuesF(&trgt->stateUncertainty, "Covariance Matrix", outDebugFile); 
+				Mat S = H*trgt->stateUncertainty*H.t() + trgt->R;
+				Mat m = trgt->stateUncertainty - trgt->K*H*trgt->stateUncertainty - trgt->stateUncertainty*H.t()*trgt->K.t() + trgt->K*S*trgt->K.t();
+				Utils::printValuesF(&m, "Covariance Matrix (Updated-non optimal kalman gain)", outDebugFile);
+			}
+
+			trgt->stateUncertainty = (I - (trgt->K*H))*trgt->stateUncertainty;
+			
+			if (debug >= DEBUG_NONE && frames == 80)
+			{
+				Utils::printValuesF(&trgt->stateUncertainty, "Covariance Matrix (Updated)", outDebugFile); 
+			}
 		}
 
 		/*
@@ -1973,6 +2157,7 @@ namespace AM
 		*/
 		static void checkEnd_NewTracks(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl)
 		{
+
 			Person* out = new Person[ttl_trckPpl+ttl_dtctPpl];
 			int cont = 0;
 			//int maxId = -1;
@@ -1992,7 +2177,7 @@ namespace AM
 			for (int i = 0; i < ttl_dtctPpl; i++)
 			{
 				Person* dtc = &dtctPpl[i];
-				if (!dtc->associated && dtc->control == DTC_FULL)
+				if (!dtc->associated && dtc->control != DTC_MERGE)
 				{
 					dtc->id = pplId_cont++;
 					out[cont++] = *dtc;
@@ -2023,15 +2208,26 @@ namespace AM
 				//It uses a flag to check if the target is lost
 				if (target->lost <= TRACKLOST_THRESHOLD)
 				{
-			
+					/*if (target->id == 1)
+					{
+						printValuesF(&target->stateUncertainty, "Uncertainty of the state(Before prediction)", outDebugFile);
+					}*/
 					//Predict the state of the target using the motion model.
 					predictState(target, debug);
+
+					//updates the measurement error (range dependent) and the euclidean gatting area
+					setTimeVariantParameters(target, debug, frames);
+
+	/*				if (target->id == 0 && frames == 262)
+					{
+						printValuesF(&target->stateUncertainty, "Uncertainty of the state(After prediction and before updating)", outDebugFile);
+					}*/
 
 					//debug draw the predict position and uncertainty
 					if (debug == DEBUG_MED)
 					{
 						drawPersonCov_debug(*target, moa,Scalar(127,127,127));
-						Utils::printValuesF(&target->covMoA, "CovMat", cout);
+						Utils::printValuesF(&target->stateUncertainty, "CovMat", cout);
 						//imshow(windMoA, *moa);
 						//waitKey(0);
 					}
@@ -2039,15 +2235,22 @@ namespace AM
 					//Find the measurement generated by the target
 					Person* measur = NULL;
 					float compDist = -1;
-					if (frames == 96 && target->id == 1)
-						cout << "Stop dude" << endl;
-					association(target, dtctPpl, ttl_dtctPpl, measur, compDist, debug, frames);
+					//This area of the code is use to plug-in and plug-out different data association techniques
+				
+					//1- Nearest neighbour (greedy approach based on the gating area)
+					associationNNeigh(target, dtctPpl, ttl_dtctPpl, measur, debug, frames);
 
-					if (measur != NULL)
+					//association(target, dtctPpl, ttl_dtctPpl, measur, compDist, debug, frames);
+
+					if (measur != NULL && measur->control != DTC_MERGE)
 					{
-						measur->associated = true;
 						//Update the position of the target using the Kalman equations.
-						updateState(target, measur, compDist, debug);
+						updateState(target, measur, compDist, debug, frames);
+
+					/*	if (target->id == 0 && frames == 262)
+						{
+							printValuesF(&target->stateUncertainty, "Uncertainty of the state(After updating)", outDebugFile);
+						}*/
 
 						//Only updates the height and colour model when it is "certain" that
 						//the candidate corresponds to the target. Also it needs to be fully detected (not splits or merges)
@@ -2058,13 +2261,24 @@ namespace AM
 							updateModel(target, measur);	
 
 					}
-					else
+					else if (measur == NULL)
+					{
+						target->associated = false;
 						target->lost++;
+						target->moAPoints.clear();
+					}
+					else
+					{
+						target->associated = false;
+						target->control = DTC_MERGE;
+					}
+
 				}
 			}
-			checkEnd_NewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
-		}
 
+			checkEnd_NewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+
+		}
 
 		/*
 		Update the tracks trajectory with the information from the current frames.
@@ -2079,8 +2293,8 @@ namespace AM
 				Position pos;
 				pos.frameId = frames;
 				Point mean = Point(p.stateMoA.at<float>(0), p.stateMoA.at<float>(1));
-				float varX = sqrtf(p.covMoA.at<float>(0,0));
-				float varY = sqrtf(p.covMoA.at<float>(1,1));
+				float varX = sqrtf(p.stateUncertainty.at<float>(0,0));
+				float varY = sqrtf(p.stateUncertainty.at<float>(1,1));
 				pos.bbox = Rect(mean.x-varX, mean.y-varY, varX*2, varY*2);
 
 				bool found = false;

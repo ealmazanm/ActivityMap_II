@@ -190,7 +190,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 
 		if (frames == 5) 
 			bgComplete = true;
-		if (debug >= DEBUG_LOW)
+		if (debug >= DEBUG_NONE)
 			outDebugFile << "Frame " << frames << endl;
 
 		if (debug >= DEBUG_MED)
@@ -315,7 +315,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					updatePolarAlternateive(&polarAlt, &polar, pntsMap2, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug, i);	
 					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
 
-					if (debug >= DEBUG_NONE)
+					if (debug >= DEBUG_MED)
 					{
 						startTime_tmp = clock();
 						updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
@@ -365,13 +365,25 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					waitKey(0);
 				}
 
+				
 				startTime_tmp = clock();
 				tracking(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, activityMap, debug, frames);
 				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
 
+				//debug- display the state of every target (lost, associated, ...)
+				if (debug >= DEBUG_NONE && frames >= debugFrame)
+				{
+					for (int i = 0; i < ttl_trckPpl; i++)
+					{
+						Person prs = trckPpl[i];
+						outDebugFile << "Person Id: " << prs.id << " ( Lost: " << prs.lost << ", Ass: " << prs.associated << " )" << endl;;
 
 
-				//debug
+					}
+				}
+
+
+				//debug - It draws in blue the pixel detected of a person in the image plane
 				if (debug >= DEBUG_HIGH && ttl_trckPpl > 0)
 				{
 					Person* prs =  &trckPpl[0];
@@ -454,24 +466,30 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					tmp = activityMap_Back;
 							
 
-				if (debug >= DEBUG_NONE && ttl_dtctPpl > 0)
+				if (debug >= DEBUG_MED && ttl_trckPpl > 0)
 				{
-					Person* prs =  &dtctPpl[0];
+					Person* prs =  &trckPpl[0];
 					int c = 1;
-					while (prs->id != 0)
+					while (prs->id != 3 && c < ttl_trckPpl)
 					{
-						prs = &dtctPpl[c];
+						prs = &trckPpl[c];
 						c++;
 					}
 					if (prs->id == 0)
 					{
-						outDebugFile << "Frame: " << frames << endl;
-						outDebugFile << "SigmaX,Y_rps: " << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << endl;
-						Utils::printValuesF(&prs->covMoA, "Cov MoA", outDebugFile);
+						//outDebugFile << "Frame: " << frames << endl;
+						//outDebugFile << "SigmaX,Y_rps: " << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << endl;
+						//Utils::printValuesF(&prs->covMoA, "Cov MoA", outDebugFile);
+						//printValuesF(&prs->A, "Motion Model personid 0", outDebugFile);
+						//printValuesF(&prs->stateMoA, "Person state id 0", outDebugFile);
+						//printValuesF(&prs->stateUncertainty, "Uncertainty of the state(updated)", outDebugFile);
+						//printValuesF(&prs->Q, "Motion model error prs Id 0", outDebugFile);
+						//printValuesF(&prs->R, "Person measurement error id 0", outDebugFile);
+						//printValuesF(&prs->K, "Kalman Gain prs id 0", outDebugFile);
 					}
 				}
 				startTime_tmp = clock();
-				//displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug);
+				displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
 				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
@@ -623,9 +641,12 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 		//	copyPerson(pastPpl[i], &dtctPpl[i]);
 			//pastPpl[i] = dtctPpl[i];
 		//}
-		if (frames == 350)
-			bShouldStop = true;
-		
+		//if (frames == 465)
+		//{
+			//bShouldStop = true;
+		//	debugFrame = frames;
+			//waitTime = 0;
+		//}
 		frames++;
 	}
 	delete []pntsMap2;

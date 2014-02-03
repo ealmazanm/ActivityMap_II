@@ -40,11 +40,11 @@ int main(int argc, char* argv[])
 	else if (debug == AM::DEBUG_HIGH)
 		cout << ". Debug high" << endl;
 
-	PplDetection_v1 pplDetc;
-	pplDetc.detection(fromVideo, recordOut, tilt, debug);
+	//PplDetection_v1 pplDetc;
+	//pplDetc.detection(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
-	//PplTracker_v1 pplTrack;
-	//pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
+	PplTracker_v1 pplTrack;
+	pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
 	//VLDReportLeaks();
 }
