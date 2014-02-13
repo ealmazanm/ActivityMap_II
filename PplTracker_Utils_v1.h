@@ -162,7 +162,8 @@ namespace AM
 		static float gateEuclidean[] = {0.05, 0.038};
 
 	//Tracking variables
-		static const float MEASUREMENT_ERROR = 400; //it will be down scale to a maximum of 45%
+		static const float MEASUREMENT_RHO_ERROR = 400; //it will be down scale to a maximum of 45%
+		static const float MEASUREMENT_THETA_ERROR = 40; //constant
 		static const float PROCESS_ERROR = 50;
 		static const int DTC_FULL = 0;
 		static const int DTC_MERGE = 1;
@@ -569,7 +570,7 @@ namespace AM
 
 			float valsR[] = {1,0,0,1};
 			m = Mat(2,2, CV_32F, valsR);
-			m = m*MEASUREMENT_ERROR;
+			m = m*MEASUREMENT_RHO_ERROR;
 			m.copyTo(p->R);
 
 			//Prediction linear model
@@ -694,20 +695,14 @@ namespace AM
 		{
 			float range = sqrtf(pow(prs->mean3D.X,2) + pow(prs->mean3D.Z,2));
 			float scale = ((0.33*log(10+3*range/1000))-0.80597);
-			//float scale = gateEuclidean[0] + gateEuclidean[1]*(range/1000);
-			//first iteration the measruemente is trusted 100%
-			//float valsR[] = {powf(meas_std,2),0,0,powf(meas_std,2)};
-			float valsR[] = {MEASUREMENT_ERROR*scale,0,0,40};
+	
+			float valsR[] = {MEASUREMENT_RHO_ERROR*scale,0,0,MEASUREMENT_THETA_ERROR};
 			Mat m = Mat(2,2, CV_32F, valsR);
-			//printValuesF(&prs->rotation, "Rotation matrix II", outDebugFile);
 			Mat s = (prs->rotation*m*prs->rotation.t());
-
-			//m = m*MEASUREMENT_ERROR*scale;
 			s.copyTo(prs->R);
 			prs->range3D = range; //probably not needed
-
-			prs->euclThresh = scale*EUCLIDEAN_THRESHOLD;
-		}
+			prs->euclThresh = scale*EUCLIDEAN_THRESHOLD; //probably not needed
+  		}
 
 
 		//Projects the detected gaussian distribution (mean, variance) to the MoA (non linear)
@@ -1109,7 +1104,7 @@ namespace AM
 						totalSubIntervalsDetection[PROJECT2MOA_ID] += clock() - startTime;
 
 						//debug to get the location in the MoA by mapping all the points
-						if (debug >= DEBUG_NONE)//&& prs->id == 0)
+						if (debug >= DEBUG_MED)//&& prs->id == 0)
 						{
 							mapPointsMoA(b, prs, imgCpy, debug, frames, debugFrame);
 							/*outDebugFile << "Distribution parameters (mapped)" << endl;
@@ -1590,7 +1585,7 @@ namespace AM
 					
 
 					//To display the ellipse of the detection in comparison with the updated tracked ellipse
-					if (debug >= DEBUG_NONE)
+					if (debug >= DEBUG_MED)
 					{
 //						if (p->id == 1 && frames == 80)
 //							printValuesF(&p->stateUncertainty, "State uncertainty before drawing ellipse", outDebugFile);
@@ -1714,42 +1709,12 @@ namespace AM
 		*/
 		static void predictState(Person*& p, int debug)
 		{
-			if (debug >= DEBUG_MED)
-			{
-				if (p->id == 1)
-				{
-					printValuesF(&p->stateMoA, "State before prediction", outDebugFile);
-					printValuesF(&p->A, "Motion model", outDebugFile);
-					Mat tt = p->A * p->stateMoA;
-					printValuesF(&tt, "State after prediction", outDebugFile);
-				}
-			}
 
 			p->stateMoA = p->A * p->stateMoA;
-
-			if (debug >= DEBUG_MED)
-			{
-				if (p->id == 1)
-				{
-					outDebugFile << "PREDICT STATE (COVARIANCE UPDATE)" << endl;
-					Utils::printValuesF(&p->stateUncertainty, "Covariance matrix (before prediction)", outDebugFile);
-					Utils::printValuesF(&p->A, "Prediction model (A)", outDebugFile);
-					Utils::printValuesF(&p->Q, "Error prediction cov (Q)", outDebugFile);
-					Mat tmp = p->A * p->stateUncertainty * p->A.t();
-					Utils::printValuesF(&tmp, "(APA')", outDebugFile);
-				}
-			}
 
 			//CovMoA is the covariance projected from the detection
 			if (p->associated) //from last frame. It does not increase its uncertainty if there were not measurement
 				p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
-
-			if (debug > DEBUG_MED)
-			{
-		
-				Utils::printValuesF(&p->stateUncertainty, "Covariance matrix (after prediction)", cout);
-				outDebugFile << "-----------------------------------" << endl;
-			}
 		}
 
 
@@ -2051,12 +2016,6 @@ namespace AM
 		*/
 		static void updateState(Person* trgt, Person* msr, float dComp, int debug, int frames)
 		{
-	/*		if (trgt->id == 3)
-			{
-				printValuesF(&trgt->stateUncertainty, "Uncertainty of the state(After prediction and before updating)", outDebugFile);
-				printValuesF(&trgt->R, "Error Measurement", outDebugFile);
-			}*/
-			//K = 4x2 matrix
 			//Biggest R entails smallest K and viceversa
 			Mat K = trgt->stateUncertainty * H.t() * (H * trgt->stateUncertainty * H.t() + trgt->R).inv();
 			K.copyTo(trgt->K);
@@ -2091,25 +2050,8 @@ namespace AM
 
 			//update the covariance 
 			Mat I = Mat::eye(4,4,CV_32F);
-
-			if (debug >= DEBUG_MED && frames == 80)
-			{
-				outDebugFile << "UPDATE STATE" << endl;
-				Utils::printValuesF(&I, "Identity matrix", outDebugFile);
-				Utils::printValuesF(&trgt->K, "K", outDebugFile);
-				Utils::printValuesF(&H, "H", outDebugFile);
-				Utils::printValuesF(&trgt->stateUncertainty, "Covariance Matrix", outDebugFile); 
-				Mat S = H*trgt->stateUncertainty*H.t() + trgt->R;
-				Mat m = trgt->stateUncertainty - trgt->K*H*trgt->stateUncertainty - trgt->stateUncertainty*H.t()*trgt->K.t() + trgt->K*S*trgt->K.t();
-				Utils::printValuesF(&m, "Covariance Matrix (Updated-non optimal kalman gain)", outDebugFile);
-			}
-
 			trgt->stateUncertainty = (I - (trgt->K*H))*trgt->stateUncertainty;
-			
-			if (debug >= DEBUG_NONE && frames == 80)
-			{
-				Utils::printValuesF(&trgt->stateUncertainty, "Covariance Matrix (Updated)", outDebugFile); 
-			}
+
 		}
 
 		/*
@@ -2196,8 +2138,7 @@ namespace AM
 
 
 		static void tracking(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, int debug, int frames)
-		{
-	
+		{	
 			//Based on the area covered by the person
 			look4MergeSplits(dtctPpl, ttl_dtctPpl);
 			for (int i = 0; i < ttl_trckPpl; i++)
@@ -2208,29 +2149,11 @@ namespace AM
 				//It uses a flag to check if the target is lost
 				if (target->lost <= TRACKLOST_THRESHOLD)
 				{
-					/*if (target->id == 1)
-					{
-						printValuesF(&target->stateUncertainty, "Uncertainty of the state(Before prediction)", outDebugFile);
-					}*/
 					//Predict the state of the target using the motion model.
 					predictState(target, debug);
 
 					//updates the measurement error (range dependent) and the euclidean gatting area
 					setTimeVariantParameters(target, debug, frames);
-
-	/*				if (target->id == 0 && frames == 262)
-					{
-						printValuesF(&target->stateUncertainty, "Uncertainty of the state(After prediction and before updating)", outDebugFile);
-					}*/
-
-					//debug draw the predict position and uncertainty
-					if (debug == DEBUG_MED)
-					{
-						drawPersonCov_debug(*target, moa,Scalar(127,127,127));
-						Utils::printValuesF(&target->stateUncertainty, "CovMat", cout);
-						//imshow(windMoA, *moa);
-						//waitKey(0);
-					}
 
 					//Find the measurement generated by the target
 					Person* measur = NULL;
@@ -2246,16 +2169,6 @@ namespace AM
 					{
 						//Update the position of the target using the Kalman equations.
 						updateState(target, measur, compDist, debug, frames);
-
-					/*	if (target->id == 0 && frames == 262)
-						{
-							printValuesF(&target->stateUncertainty, "Uncertainty of the state(After updating)", outDebugFile);
-						}*/
-
-						//Only updates the height and colour model when it is "certain" that
-						//the candidate corresponds to the target. Also it needs to be fully detected (not splits or merges)
-		//				if (debug > DEBUG_MED)
-		//					outDebugFile << "Comparison coefficient: " << compDist << ". COMPARISON THRESHOLD: " << COMP_THRESHOLD << endl;
 
 						if (compDist < COMP_THRESHOLD && measur->control == DTC_FULL)
 							updateModel(target, measur);	
