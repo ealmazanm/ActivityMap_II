@@ -93,7 +93,7 @@ namespace PplDtcV1
 			int lost;
 			bool associated;
 		};
-
+		static int AREA_THRESHOLD = 85;
 		struct PointMapping
 		{
 			const XnPoint3D* p3D;
@@ -1030,7 +1030,7 @@ namespace PplDtcV1
 			if (!upperQuadrant)
 				angle = -angle;
 
-			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);		
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);	
 		}
 
 		static void drawPersonPointsCov_debug(const Person& p, Mat* moa, Scalar color)

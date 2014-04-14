@@ -30,10 +30,11 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	else if (debug == DEBUG_HIGH)
 		cout << ". Debug high" << endl;
 
+	ofstream outDtcAreas ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\mergeMeasurementsST_85_det.txt");
 	char* paths[3];
-	paths[0] = "d:/Emilio/Tracking/DataSet/kinect0_calib.oni";
-	paths[1] = "d:/Emilio/Tracking/DataSet/kinect1_calib.oni";
-	paths[2] = "d:/Emilio/Tracking/DataSet/kinect2_calib.oni";
+	paths[0] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet2/kinect0_calib.oni";
+	paths[1] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet2/kinect1_calib.oni";
+	paths[2] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet2/kinect2_calib.oni";
 
 	//Initialize resolutions MoA and Remap Polar space
 	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
@@ -283,23 +284,34 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
 				//outDebugFile << "After detection" << endl;
 
-				if (debug == DEBUG_HIGH)
+				if (debug >= DEBUG_NONE)
 				{
-					//print bounding box areas					
 					for (int i = 0; i < ttl_dtctPpl; i++)
 					{
-						const Person* p = &(dtctPpl[i]);
-						float sgX = p->covMoA.at<float>(0,0);
-						float sgY = p->covMoA.at<float>(1,1);
-						outBboxModel << sgX*sgY << endl;
+						Person rpsDtc = dtctPpl[i];
+						float area = (2*rpsDtc.sigmaX_RPS) * (2*rpsDtc.sigmaY_RPS);
+												
+						Point meanRPS;
+						meanRPS = rpsDtc.mean_RPS;
+						double covX = rpsDtc.sigmaX_RPS*rpsDtc.sigmaX_RPS;
+						double covY = rpsDtc.sigmaY_RPS*rpsDtc.sigmaY_RPS;
+						double covXY = 0;
+						Point meanMoA;
+						meanMoA.x = rpsDtc.stateMoA.at<float>(0, 0);
+						meanMoA.y = rpsDtc.stateMoA.at<float>(1, 0);
+						double covXMoA = rpsDtc.covMoA_points.at<float>(0,0);
+						double covYMoA = rpsDtc.covMoA_points.at<float>(1,1);
+						double covXYMoA = rpsDtc.covMoA_points.at<float>(0,1);
+						int merge = 0;
+						if (area  > AREA_THRESHOLD)
+							merge = 1;
 
-						if (frames == debugFrame)
-						{
-							Utils::printValuesF(&p->covMoA, "CovMoa(II)", outDebugFile);
-							//Utils::printValuesF(&p->gtArea, "Gate area(II)", outDebugFile);
-						}
+						outDtcAreas << rpsDtc.id << " " << frames << " " << area << " " << meanRPS.x << " " << meanRPS.y << " "
+							<< covX << " " << covY << " " << merge << " " << meanMoA.x << " " << meanMoA.y << " " 
+							<< covXMoA << " " << covYMoA << " " << covXYMoA << endl;
+
+
 					}
-
 				}
 
 				if (debug == DEBUG_HIGH)

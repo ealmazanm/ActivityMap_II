@@ -2,6 +2,9 @@
 #include <Utils.h>
 #include <vld.h>
 
+#include <tinystr.h>
+#include <tinyxml.h>
+
 namespace AM
 {
 	//INTERVALS TIME EXECUTION
@@ -100,13 +103,15 @@ namespace AM
 			//int totalColours;
 		};
 
-
+		static int AREA_THRESHOLD = 160;
+		static int GATING_THRESHOLD = 4;
 		struct Person
 		{
 			int id;
 			Mat stateMoA;
 			Mat stateUncertainty;
 			Mat covMoA_points;
+			Mat innUncertainty;
 			Point2d  mean_RPS;
 			double sigmaY_RPS;
 			double sigmaX_RPS;
@@ -122,6 +127,7 @@ namespace AM
 			int lost;
 			bool associated;
 
+			Scalar colour;
 
 			//debug
 			float maxHeight;
@@ -142,8 +148,36 @@ namespace AM
 			Mat rotation; //matrix that rotates a covariance matrix depending on its mean position in the MoA
 			Mat stateUn_noupdate;
 			Point mean_noupdate;
-
+			//Only when it is a merge detection
+			int numAsso; //counts the number of target associations
+			vector<int> associatedIds; //Store the id's of the targets associated
 		};
+
+		struct EllipseParam
+		{
+			Point mean;
+			double covX;
+			double covY;
+			double covXY;
+		};
+
+		struct DCF
+		{
+			int idFrame;
+			vector<int> trgtIds;
+			vector<EllipseParam> gd_Prms;
+			EllipseParam avgEllipse;
+		};
+
+		struct Merge
+		{
+			vector<int> tgtIds;
+			int initFrame;
+			int endFrame;
+			int id;
+			vector<EllipseParam> gd_Prms;
+		};
+
 
 		struct PointMapping
 		{
@@ -183,14 +217,18 @@ namespace AM
 		struct Position
 		{
 			int frameId;
-			Rect bbox;
+			float covX;
+			float covY;
+			float covXY;
+			Point mean;
+			//Rect bbox;
 		};
-		struct Track
+		struct TrackInfo
 		{
 			int id;
 			vector<Position> trajectory;
 		};
-		static vector<Track> tracks;
+		//static vector<Track> tracks;
 
 	//Output files
 		static ofstream outDebugFile("d:/Debug.txt");
@@ -205,6 +243,11 @@ namespace AM
 		static ifstream tiltTXT("D:\\CameraCalibrations\\extrinsics\\tilt.txt");
 		static ofstream outMoaPnts("c:\\Dropbox\\PhD\\Matlab\\MoAPoints\\distributionMoA.txt");
 		static ofstream outRPSPnts("c:\\Dropbox\\PhD\\Matlab\\MoAPoints\\distributionRPS.txt");
+		static ofstream outDataAss("c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\SequenceB\\validatedMeasurements.txt");
+		static ofstream outMerge("c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\SequenceB\\mergeMeasurements.txt");
+		static const char* out_dcfs_system ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\dcfs_system.xml");
+		static const char* out_merge_system ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\mergeMeasurements_system.xml");
+
 
 	//FUNCTIONS
 		//Transform the array of depths into a matrix (USHORT/CV_16U) of depths
@@ -450,7 +493,7 @@ namespace AM
 				totalSubIntervalsRPS[FEATURE_ID] += clock() - startTime; //time debugging
 
 
-				if (debug >= DEBUG_MED)
+				if (debug >= DEBUG_NONE)
 				{
 					yPos = RANGE_ROWS - ((int)range/RANGE_STEP);
 					if (yPos < 0 || yPos >= RANGE_ROWS)
@@ -582,6 +625,7 @@ namespace AM
 			Mat(4,1,CV_32F, valState).copyTo(p->stateMoA);
 			p->stateUncertainty = Mat::zeros(4,4, CV_32F);
 			p->covMoA_points = Mat::zeros(2,2,CV_32F);
+			p->innUncertainty = Mat::zeros(2,2, CV_32F);
 	
 
 			
@@ -654,6 +698,8 @@ namespace AM
 			covCartessian.copyTo(prs->covDtction);
 		}
 
+
+		//This is explained in "KinectDepthSensor_Analysis_updated" document
 		static void projectCovariance_Var(Person* prs)
 		{
 
@@ -1096,7 +1142,7 @@ namespace AM
 
 						//Todo build appearance model
 						startTime = clock();
-						buildAppearanceModel(b, prs, pntsMap2, debug, debugFrame, frames);
+						//buildAppearanceModel(b, prs, pntsMap2, debug, debugFrame, frames);
 						totalSubIntervalsDetection[BUILDAPPEARANCE_ID] += clock() - startTime; //time debugging
 
 						startTime = clock();
@@ -1444,8 +1490,33 @@ namespace AM
 		}
 
 	//TRACKING FUNCTIONS
+
+		static void drawGatinArea(const Mat& innUncertainty, const Point& pntMean, Mat* moa, Scalar color, char* txt)
+		{
+			//Mat gtMat = GATING_THRESHOLD*innUncertainty;
+			SVD svd(innUncertainty);
+						
+			float bigAxis = GATING_THRESHOLD*sqrtf(svd.w.at<float>(0));
+			float smallAxis = GATING_THRESHOLD*sqrtf(svd.w.at<float>(1));
+
+			//identify the quadrant of the main eigenvector
+			bool upperQuadrant = (svd.u.at<float>(1,0) > 0);
+			Mat bigEigenVct = svd.u(Rect(0,0, 1,2));
+			float vals[] = {1, 0};
+			Mat mainAxis = Mat(2,1, CV_32F, vals);
+			float dotPrd = bigEigenVct.dot(mainAxis);
+			float angle = acosf(dotPrd)*180/CV_PI;
+			if (!upperQuadrant)
+					angle = -angle;
+
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, 1);		
+			if (txt != NULL)
+				putText(*moa, txt, Point(pntMean.x + bigAxis, pntMean.y), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, color);
+
+		}
+
 		//static void drawPersonPointsCov_debug(const Perso&n p, Mat* moa, Scalar color)
-		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color, int thickness)
+		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color, int thickness, char* txt)
 		{
 			SVD svd(cov);
 	
@@ -1459,17 +1530,12 @@ namespace AM
 			Mat mainAxis = Mat(2,1, CV_32F, vals);
 			float dotPrd = bigEigenVct.dot(mainAxis);
 			float angle = acosf(dotPrd)*180/CV_PI;
-			//Check the reason
-			//if (pntMean.x < moa->cols/2)
-			//{
-			//	if (!upperQuadrant)
-			//		angle = -angle;
-			//}
-			//else
-				if (!upperQuadrant)
-					angle = -angle;
+			if (!upperQuadrant)
+				angle = -angle;
 
-			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness);		
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness);	
+			if (txt != NULL)
+				putText(*moa, txt, Point(pntMean.x + bigAxis, pntMean.y), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, Scalar(0,0,255));
 		}
 
 
@@ -1492,6 +1558,70 @@ namespace AM
 			cv::ellipse(*moa, pntMean, Size(bigAxisMag, smallAxisMag), angle, 0, 360, color, 3);	
 		}
 
+		static bool displayMergeMeasurements(Person* trckPpl, int ttl_trckPpl, Person* dtctPpl, int ttl_dtctPpl, Mat& moa, int debug, int frames)
+		{
+			for (int iter = 0; iter < ttl_trckPpl; iter++)
+			{
+				const Person* p = &(trckPpl[iter]);
+
+				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
+				
+				Scalar color = Scalar(0,0,255); //occluded blob
+				
+				char txt[15];
+				itoa(p->id, txt, 10);
+				putText(moa, txt, Point(meanMoA.x + 10, meanMoA.y + 10), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, color);
+			}
+
+			bool out = false;		
+			for (int iter = 0; iter < ttl_dtctPpl; iter++)
+			{
+				const Person* p = &(dtctPpl[iter]);
+					
+				Scalar color;
+				
+				if (p->control != DTC_MERGE)
+					color = Scalar(255,0,0);
+				else if (p->control == DTC_MERGE)
+				{
+					color = Scalar(0,0,255);
+					out = true;
+				}
+				
+				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
+						
+				float area = 4*p->sigmaX_RPS * p->sigmaY_RPS;
+				char txt[15];
+				itoa(area, txt, 10);
+				drawGatinArea(p->covDtction, meanMoA, &moa, color, txt);
+			}
+			return out;
+
+		}
+
+		static void displayRPSDetections(Person* dtctPpl, int ttl_dtctPpl, Mat& remapPolar, int debug)
+		{
+						
+			for (int iter = 0; iter < ttl_dtctPpl; iter++)
+			{
+				const Person* p = &(dtctPpl[iter]);
+					
+				Scalar color;
+				
+				if (p->control == DTC_FULL)
+					color = Scalar(255,0,0);
+				else if (p->control == DTC_MERGE)
+					color = Scalar(0,0,255);
+				
+				cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
+
+				float vals[] = {powf(p->sigmaX_RPS,2), 0, 0, powf(p->sigmaY_RPS,2)};
+				Mat cov = Mat(2,2, CV_32F, vals);
+
+				drawPersonPointsCov_debug(p->mean_RPS, cov, &remapPolar, Scalar::all(0), 1, NULL);
+			}
+		}
+
 		static void displayDetections(Person* dtctPpl, int ttl_dtctPpl, Mat& remapPolar, Mat& moa, int debug)
 		{
 			for (int iter = 0; iter < ttl_dtctPpl; iter++)
@@ -1505,30 +1635,20 @@ namespace AM
 				else if (p->control == DTC_MERGE)
 					color = Scalar(0,0,255);
 				
-//				if (p->lost == 0)
+
+				if (debug >= DEBUG_NONE)
 				{
-					if (debug > DEBUG_MED)
-					{
-						cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
-						cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
-					}
+					cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
+					cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
+				}
 
-					//Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
-					//cv::circle(moa, meanMoA, 2, Scalar(0,0,255));
+				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
 
-					/*Scalar color = Scalar(255,0,0);
-					float sgX = sqrtf(p->covMoA.at<float>(0,0));
-					float sgY = sqrtf(p->covMoA.at<float>(1,1));
-					float area = sgX*sgY;
-					if (area > 100 && area < 800) 
-						color = Scalar(0,255,0);
-					else if (area > 800)
-						color = Scalar(0,0,255);*/
+				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, Scalar::all(0), 1, NULL);
 
-					//Point pntMean = Point(p->stateMoA.at<float>(0,0),p->stateMoA.at<float>(1,0));
-					//drawPersonPointsCov_debug(pntMean, p->covMoA_points, &moa, Scalar(0,0,255), 1);
-
-					//Display the mapping of the rps points along with the ellipse of the distribution
+				//Display the mapping of the rps points along with the ellipse of the distribution
+				if (debug >= DEBUG_MED)
+				{
 					int ttl = p->moAPoints.size();
 					for (int i = 0; i < ttl; i++)
 					{
@@ -1548,7 +1668,7 @@ namespace AM
 				const Person* p = &(trckPpl[iter]);
 				float vals[] = {powf(p->sigmaX_RPS,2), 0, 0, powf(p->sigmaY_RPS, 2)};
 				Mat covRPS = Mat(2,2, CV_32F, vals);
-				drawPersonPointsCov_debug(p->mean_RPS, covRPS, &remapPolar, Scalar(0,255,0),1);
+				drawPersonPointsCov_debug(p->mean_RPS, covRPS, &remapPolar, Scalar(0,255,0),1, NULL);
 				cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
 			}
 		}
@@ -1560,29 +1680,16 @@ namespace AM
 				const Person* p = &(trckPpl[iter]);
 
 				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
-				cv::circle(moa, meanMoA, 2, Scalar(255,0,0));
+				//cv::circle(moa, meanMoA, 2, Scalar(255,0,0));
 
 				Scalar color = Scalar(255,0,0); //occluded blob
 				if (p->lost > 0)
 					color = Scalar(0,0,0);
-				//else
-				{
-					//double sgX = sqrt(p->covMoA_points.at<float>(0,0));
-					//double sgY = sqrt(p->covMoA_points.at<float>(1,1));
-					//double area = 4*p->sigmaX_RPS*p->sigmaY_RPS;
-					//outDebugFile << area << " " << p->mean_RPS.y << endl;
-					//double area = sgX*sgY;
-					//float thresh = 330 - 0.694*p->mean_RPS.y;
-					//if (area < 85) // single target blob
-					//	color = Scalar(0,255,0);
-					//else if (area >= 100) // joint blob
-					//	color = Scalar(0,0,255);
-					if (p->control == DTC_FULL)
-						color = Scalar(0,255,0);
-					else if (p->control == DTC_MERGE)
-						color = Scalar(0,0,255);
-
-					
+				
+				if (p->control != DTC_MERGE)
+					color = p->colour;
+				else 
+					color = Scalar(0,0,255);
 
 					//To display the ellipse of the detection in comparison with the updated tracked ellipse
 					if (debug >= DEBUG_MED)
@@ -1600,8 +1707,10 @@ namespace AM
 						
 						//float range = sqrtf(pow(p->mean3D.X,2) + pow(p->mean3D.Z,2));
 						//float scale = ((0.33*log(10+3*range/1000))-0.80597) + 2;
+						//printValuesF(&p->innUncertainty, "Innovatin uncertainty", cout);
+						drawGatinArea(p->innUncertainty, p->mean_noupdate, &moa, Scalar(255,0,0),NULL);
 
-						drawPersonPointsCov_debug(p->mean_noupdate, p->stateUn_noupdate, &moa, Scalar(250, 0,0), 1);
+						//drawPersonPointsCov_debug(p->mean_noupdate, p->stateUn_noupdate, &moa, Scalar(250, 0,0), 1);
 						//drawPersonPointsCov_debug(meanMoA, p->stateUncertainty, &moa, c, 1);
 
 						//The error measurement
@@ -1620,8 +1729,11 @@ namespace AM
 					}
 
 					//Tracking ellipse
-					//outDebugFile << area << " " << p->mean_RPS.y << endl;// <<" " << color.val[0] <<"," << color.val[1] << "," << color.val[2] << endl;
-					drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2);
+					char txt[15];
+					itoa(p->id, txt, 10);
+					//putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.8, Scalar(0,0,255));
+
+					drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2, txt);
 					
 					if (debug >= DEBUG_MED)
 					{
@@ -1637,35 +1749,6 @@ namespace AM
 							ptr[3*pnt.x+2] = color.val[2];
 						}
 					}
-
-				}
-				
-				//int bigAxis = 20*DEPTH_SCALE;
-				//int smallAxis = 10*DEPTH_SCALE;
-
-				////Point vel = findNearestPoint(meanMoA, pastPpl, ttlPastppl); 
-				//Point vel = Point(p->stateMoA.at<float>(2,0), p->stateMoA.at<float>(3,0));
-				//float angle = 0;
-				//if (vel.x != 0 && vel.y != 0)
-				//{
-				//	if ((vel.x > 0 && vel.y > 0) || (vel.x < 0 && vel.y < 0))
-				//	{
-				//		angle = 90 + ((atanf(vel.y/vel.x))*180/CV_PI);
-				//	}
-				//	else
-				//	{
-				//		angle = 90 - ((atanf(vel.y/vel.x))*180/CV_PI);
-				//	}
-				//}
-
-				////cv::ellipse(moa, meanMoA, Size(bigAxis, smallAxis), -p->mean_RPS.x, 0, 360, color,-1);
-			
-				//cv::ellipse(moa, meanMoA, Size(bigAxis, smallAxis), -angle, 0, 360, color,-1);
-				//cv::circle(moa, meanMoA, 0.8*smallAxis, Scalar(0,0,0), -1);
-
-				char txt[15];
-				itoa(p->id, txt, 10);
-				putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.8, Scalar(0,0,255));
 			}
 		}
 
@@ -1692,9 +1775,11 @@ namespace AM
 
 				//outDebugFile << area << " " << prs->mean_RPS.y << endl;
 				//float thresh = 330 - 0.694*prs->mean_RPS.y;
-				if (area >= 110) // joint blob
-						prs->control = DTC_MERGE;
-				
+				if (area >= 122) // joint blob
+				{
+					prs->control = DTC_MERGE;
+					prs->numAsso = 0;
+				}
 				//if (area < 50)
 				//	prs->control = DTC_SPLIT;
 				//else if (area > 800)
@@ -1707,7 +1792,7 @@ namespace AM
 		/*
 		Predict the state and covariance of the position 
 		*/
-		static void predictState(Person*& p, int debug)
+		static void predictState(Person*& p, int debug, int frames)
 		{
 
 			p->stateMoA = p->A * p->stateMoA;
@@ -1715,6 +1800,12 @@ namespace AM
 			//CovMoA is the covariance projected from the detection
 			if (p->associated) //from last frame. It does not increase its uncertainty if there were not measurement
 				p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
+			
+			Mat innUncertainty = H * p->stateUncertainty * H.t() + p->R;
+			innUncertainty.copyTo(p->innUncertainty);
+
+			//updates the measurement error (range dependent) and the euclidean gatting area
+			setTimeVariantParameters(p, debug, frames);
 		}
 
 
@@ -1890,38 +1981,43 @@ namespace AM
 		It uses a first gating area to select the measurment closest to the target. Then chooses the measurement with the minimum
 		Mahalanobis distance
 		*/
-		static void gateDetectionNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug)
+		static void gateDetectionNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug, int frames)
 		{
-			Mat uncert = target->stateUncertainty(Rect(0,0,2,2));
-			uncert.copyTo(target->stateUn_noupdate);
-			Mat uncertInv = uncert.inv();
-			Mat tgtMean = target->stateMoA(Rect(0,0, 1,2));
+			target->innUncertainty = H*target->stateUncertainty*H.t() + target->R;
+
+			Mat tgtMean = H*target->stateMoA;
 			target->mean_noupdate.x = tgtMean.at<float>(0);
 			target->mean_noupdate.y = tgtMean.at<float>(1);
+		
+			Mat innUncertInv = target->innUncertainty.inv();
 			float maxDist = 50;
+			int numValidatedMeas = 0;
+			int pos = -1;
 			for (int i = 0; i < ttl_dtctPpl; i++)
 			{
 				Person* dPrs = &dtctPpl[i];
 				if (!dPrs->associated)
-				{
-					//float eucDist = sqrtf(powf(target->stateMoA.at<float>(0,0) - dPrs->meanDtction.x, 2) + powf(target->stateMoA.at<float>(1,0) - dPrs->meanDtction.y, 2));
-					//if (eucDist < target->euclThresh)
-					//{
-					//Probably there is no need of a euclidean gate
-						float c = mahalanobis(&tgtMean, &uncertInv, dPrs);
-						if (c < 5.99 && c < maxDist) //it consider only those measurement that fall within the gating area (less than 10.597)
-						{
-							maxDist = c;
-							candidate = dPrs;
-						}
-						if (debug == DEBUG_MED)
-						{
-							outDebugFile << "Mahalanobis (tgt id: " << target->id << ". dtct id:  " << dPrs->id << "): " << c << endl;
-						}
-					//}
+				{	
+					float c = mahalanobis(&tgtMean, &innUncertInv, dPrs);
+					if (c < GATING_THRESHOLD && c < maxDist) //it consider only those measurement that fall within the gating area (less than 10.597)
+					{
+						maxDist = c;
+						candidate = dPrs;
+						numValidatedMeas++;
+						pos = i;
+					}
+					if (debug == DEBUG_MED)
+					{
+						outDebugFile << "Mahalanobis (tgt id: " << target->id << ". dtct id:  " << dPrs->id << "): " << c << endl;
+					}
 				}
 			}
-
+			//update the number of associations for this measurement if it is merge
+			if (debug >= DEBUG_NONE)
+				if (pos > -1 && dtctPpl[pos].control == DTC_MERGE)
+					dtctPpl[pos].numAsso++;
+			
+			outDataAss << target->id << " " << frames << " " << numValidatedMeas << endl;
 		}
 
 		static void gateDetection(const Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person** gPpl, int& ttl_gPpl, int debug)
@@ -2007,7 +2103,7 @@ namespace AM
 		static void associationNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug, int frames)
 		{
 			//Filter all detections within a gate region
-			gateDetectionNNeigh(target, dtctPpl, ttl_dtctPpl, candidate, debug);
+			gateDetectionNNeigh(target, dtctPpl, ttl_dtctPpl, candidate, debug, frames);
 		}	
 
 
@@ -2017,7 +2113,7 @@ namespace AM
 		static void updateState(Person* trgt, Person* msr, float dComp, int debug, int frames)
 		{
 			//Biggest R entails smallest K and viceversa
-			Mat K = trgt->stateUncertainty * H.t() * (H * trgt->stateUncertainty * H.t() + trgt->R).inv();
+			Mat K = trgt->stateUncertainty * H.t() * trgt->innUncertainty.inv();
 			K.copyTo(trgt->K);
 
 			//2x1 location of measurement
@@ -2121,6 +2217,10 @@ namespace AM
 				Person* dtc = &dtctPpl[i];
 				if (!dtc->associated && dtc->control != DTC_MERGE)
 				{
+					int red = rand() % 255 + 1;
+					int green = rand() % 255 + 1;
+					int blue = rand() % 255 + 1;
+					dtc->colour = Scalar(red,green, blue);
 					dtc->id = pplId_cont++;
 					out[cont++] = *dtc;
 				}
@@ -2136,11 +2236,285 @@ namespace AM
 		}
 
 
+		static void checkDCFs(Person*& dtctPpl, int& ttl_dtctPpl, vector<DCF>& DCFs, int frames)
+		{
+			for (int i = 0; i < ttl_dtctPpl; i++)
+			{
+				Person p = dtctPpl[i];
+				if (p.control == DTC_MERGE && p.associatedIds.size() > 0)
+				{
+					DCF dcf;
+					dcf.idFrame = frames;
+					dcf.trgtIds = p.associatedIds;
+					EllipseParam ep;
+					dcf.avgEllipse.mean.x = p.stateMoA.at<float>(0,0);
+					dcf.avgEllipse.mean.y = p.stateMoA.at<float>(1,0);
+					dcf.avgEllipse.covX = p.covDtction.at<float>(0,0);
+					dcf.avgEllipse.covY = p.covDtction.at<float>(1,1);
+					dcf.avgEllipse.covXY = p.covDtction.at<float>(1,0);
+					DCFs.push_back(dcf);					
+				}
+			}
+		}
 
-		static void tracking(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, int debug, int frames)
+		static void writeXMLDCFs(const vector<DCF>& DCFs)
+		{
+			//Add xml header <DCFs>
+			TiXmlDocument doc; 
+			TiXmlElement * root = new TiXmlElement( "DCFs" );  
+			doc.LinkEndChild( root );  
+			int idDCF = 0;
+			for (int frId = 0; frId < 1000; frId++)
+			{
+				//Add to xml File
+				TiXmlElement * dcfXml = new TiXmlElement( "DCF" );  
+				dcfXml->SetAttribute("frameId", frId);
+				root->LinkEndChild( dcfXml );  
+	
+				int cont = 0;
+				while (idDCF < DCFs.size() && DCFs[idDCF].idFrame == frId)
+				{
+					DCF dcf = DCFs[idDCF];
+					//Add to xml File
+					TiXmlElement * occXml = new TiXmlElement( "Occlusion" );  
+					occXml->SetAttribute("id", cont++);			
+					for (int i = 0; i < dcf.trgtIds.size(); i++)
+					{
+						TiXmlElement * tgtXml = new TiXmlElement( "Target" ); 
+						tgtXml->SetAttribute("Id", dcf.trgtIds[i]);
+						occXml->LinkEndChild(tgtXml);
+					}
+					dcfXml->LinkEndChild(occXml);
+					idDCF++;
+				}
+			}
+			doc.SaveFile( out_dcfs_system );  
+		}
+
+		static void writeXMLMerges(list<Merge>& mergeList)
+		{
+			//Add xml header <DCFs>
+			TiXmlDocument doc; 
+			TiXmlElement * root = new TiXmlElement( "Merges" );  
+			doc.LinkEndChild( root );
+
+			list<Merge>::iterator iter = mergeList.begin();
+			while (iter != mergeList.end())
+			{
+				Merge m = *iter;
+				TiXmlElement * mergeXml = new TiXmlElement( "Merge" ); 
+				root->LinkEndChild( mergeXml );
+				mergeXml->SetAttribute("Id", m.id);
+				mergeXml->SetAttribute("InitFrame", m.initFrame);
+				mergeXml->SetAttribute("EndFrame", m.endFrame);
+				int ttlTgts = m.tgtIds.size();
+				for (int i = 0; i < ttlTgts; i++)
+				{
+					TiXmlElement * tgtXML = new TiXmlElement( "Target" ); 
+					int tgtId = m.tgtIds[i];
+					tgtXML->SetAttribute("Id", tgtId);
+					mergeXml->LinkEndChild(tgtXML);
+				}
+
+				TiXmlElement * framesXML = new TiXmlElement( "Frames" ); 
+				for (int i = m.initFrame; i <= m.endFrame; i++)
+				{
+					TiXmlElement * frameXML = new TiXmlElement( "Frame" ); 
+					EllipseParam ep = m.gd_Prms[i-m.initFrame];
+					frameXML->SetAttribute("Number", i);
+					frameXML->SetAttribute("meanX", ep.mean.x);
+					frameXML->SetAttribute("meanY", ep.mean.y);
+					frameXML->SetDoubleAttribute("covX", ep.covX);
+					frameXML->SetDoubleAttribute("covY", ep.covY);
+					frameXML->SetDoubleAttribute("covXY", ep.covXY);
+					framesXML->LinkEndChild(frameXML);
+				}
+				mergeXml->LinkEndChild(framesXML);
+				iter++;
+		
+			}
+			doc.SaveFile( out_merge_system );  
+		}
+
+		static bool isOnCurrenList(list<Merge>& currentList, Merge* mOld)
+		{
+			Merge* m = NULL;
+
+			bool out = false;
+			list<Merge>::iterator iter = currentList.begin();
+			while ( iter != currentList.end() && !out)
+			{
+				Merge &mC( *iter );
+				if ((mC.tgtIds == mOld->tgtIds))
+				{
+					mC.initFrame = mOld->initFrame;
+					mC.id = mOld->id;
+					if (mC.gd_Prms.size() != 1)
+						cout << "Error" << endl;
+					EllipseParam ep = mC.gd_Prms[0];
+					mOld->gd_Prms.push_back(ep);
+					mC.gd_Prms = mOld->gd_Prms;
+					out =  true;
+				}
+
+				iter++;
+			}
+			return out;
+		}
+
+		static int getId(list<Merge>& mergeList)
+		{
+			int idMax = -1;
+			list<Merge>::iterator iter = mergeList.begin();
+			while (iter != mergeList.end())
+			{
+				Merge m = *iter;
+				if (m.id > idMax)
+					idMax = m.id;
+
+				iter++;
+			}
+			return idMax + 1;
+		}
+
+		//Assumes DCFs are ordered according to the frame ides
+		static void detectMerges(vector<DCF>& DCFs, list<Merge>& mergeList)
+		{
+
+			list<Merge> oldList;
+			int idDCF = 0;
+	
+			for (int frId = 0; frId < 1000; frId++)
+			{
+				list<Merge> currentList;
+				int mergeIds = mergeList.size() + oldList.size();
+				if (frId == 910)
+					cout << "Stop" << endl;
+
+				while (idDCF < DCFs.size() && DCFs[idDCF].idFrame == frId)
+				{
+					DCF dcf = DCFs[idDCF++];
+					Merge m;
+					m.id = mergeIds++;
+					m.initFrame = frId;
+					m.tgtIds = dcf.trgtIds;
+					m.gd_Prms.push_back(dcf.avgEllipse);
+					currentList.push_front(m);
+				}
+				list<Merge>::iterator iterOld = oldList.begin();
+				while (iterOld != oldList.end())
+				{
+					Merge mOld = *iterOld;
+					if (!isOnCurrenList(currentList, &mOld))
+					{
+						mOld.endFrame = frId-1;
+						mOld.id = getId(mergeList);
+						mergeList.push_back(mOld);
+						iterOld = oldList.erase(iterOld);
+				
+					}
+					else
+					{
+						iterOld++;
+					}
+				}
+		
+				oldList = currentList;
+			}
+
+			//Sanity check
+			list<Merge>::iterator iter = mergeList.begin();
+			while (iter != mergeList.end())
+			{
+				Merge m = *iter;
+				int ttlEllipses = m.gd_Prms.size();
+				int ttlFrames = (m.endFrame - m.initFrame) + 1;
+				if (ttlEllipses != ttlFrames)
+					cout << "Error" << endl;
+
+				iter++;
+			}
+
+		}
+
+		static void look4Merges(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl)
+		{
+			//A merge detection is set if two or more targets fall within the gating area
+			for (int i = 0; i < ttl_dtctPpl; i++)
+			{
+				Person* dtc = &(dtctPpl[i]);
+				Mat dtctMean = H*dtc->stateMoA;
+				int n = 0;
+				for (int j = 0; j < ttl_trckPpl; j++)
+				{
+					Person tgt = trckPpl[j];
+					const Mat covInv = dtc->covDtction.inv();
+					float c = mahalanobis(&dtctMean, &covInv, &tgt);
+					if (c < GATING_THRESHOLD)
+						n++;
+				}
+
+				if (n > 1)
+				{
+					float area = 4*dtc->sigmaX_RPS * dtc->sigmaY_RPS;
+					if (area >= AREA_THRESHOLD) // joint blob
+					{
+						dtc->control = DTC_MERGE;
+						dtc->numAsso = 0;
+					}
+				}
+
+			}
+
+		}
+
+		static void tracking(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, vector<DCF>& DCFs, int debug, int frames, ofstream& outDtcAreas)
 		{	
-			//Based on the area covered by the person
-			look4MergeSplits(dtctPpl, ttl_dtctPpl);
+			//Predict the state of all targets
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				Person* target = &trckPpl[i];
+
+				//Predict the state of the target using the motion model.
+				predictState(target, debug, frames);
+			}
+			
+			//Based on the area covered by the person Version 1:
+			//look4MergeSplits(dtctPpl, ttl_dtctPpl);
+
+			//Based on the proximity of targets and measurement area. Version 2:
+			look4Merges(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+
+			//Store the area of the detections in a file
+			if (debug >= DEBUG_NONE)
+			{
+				for (int i = 0; i < ttl_dtctPpl; i++)
+				{
+					Person rpsDtc = dtctPpl[i];
+					float area = (2*rpsDtc.sigmaX_RPS) * (2*rpsDtc.sigmaY_RPS);
+												
+					EllipseParam ep;
+					ep.mean = rpsDtc.mean_RPS;
+					ep.covX = rpsDtc.sigmaX_RPS*rpsDtc.sigmaX_RPS;
+					ep.covY = rpsDtc.sigmaY_RPS*rpsDtc.sigmaY_RPS;
+					ep.covXY = 0;
+					EllipseParam epMoA;
+					epMoA.mean = rpsDtc.meanDtction;
+					epMoA.covX = rpsDtc.covDtction.at<float>(0,0);
+					epMoA.covY = rpsDtc.covDtction.at<float>(1,0);
+					epMoA.covXY = rpsDtc.covDtction.at<float>(1,1);
+					int merge = 0;
+					if (rpsDtc.control  == DTC_MERGE)
+						merge = 1;
+
+					outDtcAreas << rpsDtc.idDetection << " " << frames << " " << area << " " << ep.mean.x << " " << ep.mean.y << " "
+						<< ep.covX << " " << ep.covY << " " << merge << " " << epMoA.mean.x << " " << epMoA.mean.y << " " 
+						<< epMoA.covX << " " << epMoA.covY << " " << epMoA.covXY << endl;
+
+				}
+			}
+
+
 			for (int i = 0; i < ttl_trckPpl; i++)
 			{
 				Person* target = &trckPpl[i];
@@ -2150,10 +2524,7 @@ namespace AM
 				if (target->lost <= TRACKLOST_THRESHOLD)
 				{
 					//Predict the state of the target using the motion model.
-					predictState(target, debug);
-
-					//updates the measurement error (range dependent) and the euclidean gatting area
-					setTimeVariantParameters(target, debug, frames);
+					//predictState(target, debug, frames);
 
 					//Find the measurement generated by the target
 					Person* measur = NULL;
@@ -2174,7 +2545,7 @@ namespace AM
 							updateModel(target, measur);	
 
 					}
-					else if (measur == NULL)
+					else if (measur == NULL) // not associated
 					{
 						target->associated = false;
 						target->lost++;
@@ -2182,6 +2553,7 @@ namespace AM
 					}
 					else
 					{
+						measur->associatedIds.push_back(target->id);
 						target->associated = false;
 						target->control = DTC_MERGE;
 					}
@@ -2189,15 +2561,25 @@ namespace AM
 				}
 			}
 
+			checkDCFs(dtctPpl, ttl_dtctPpl, DCFs, frames);
 			checkEnd_NewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
 
+			if (debug >= DEBUG_NONE)
+			{
+				for (int i = 0; i < ttl_dtctPpl; i++)
+				{
+					Person p = dtctPpl[i];
+					if (p.control == DTC_MERGE && p.numAsso > 0)
+						outMerge << frames << " " << p.numAsso << endl;				
+				}
+			}
 		}
 
 		/*
 		Update the tracks trajectory with the information from the current frames.
 		Used to store in memory the trajectories of all tracks in the entire sequence
 		*/
-		static void generateTrackHistory(Person*& trckPpl, int& ttl_trckPpl, int frames)
+		static void generateTrackHistory(vector<TrackInfo>& tracks, Person*& trckPpl, int& ttl_trckPpl, int frames)
 		{
 			for (int i = 0; i < ttl_trckPpl; i++)
 			{
@@ -2205,10 +2587,15 @@ namespace AM
 				Person p = trckPpl[i];
 				Position pos;
 				pos.frameId = frames;
-				Point mean = Point(p.stateMoA.at<float>(0), p.stateMoA.at<float>(1));
-				float varX = sqrtf(p.stateUncertainty.at<float>(0,0));
+				pos.mean = Point(p.stateMoA.at<float>(0), p.stateMoA.at<float>(1));
+				/*float varX = sqrtf(p.stateUncertainty.at<float>(0,0));
 				float varY = sqrtf(p.stateUncertainty.at<float>(1,1));
-				pos.bbox = Rect(mean.x-varX, mean.y-varY, varX*2, varY*2);
+				pos.bbox = Rect(mean.x-varX, mean.y-varY, varX*2, varY*2);*/
+				pos.covX = p.covMoA_points.at<float>(0,0);
+				pos.covY = p.covMoA_points.at<float>(1,1);
+				pos.covXY = p.covMoA_points.at<float>(0,1);
+				//pos.bbox = Rect(mean.x-varX, mean.y-varY, varX*2, varY*2);
+				
 
 				bool found = false;
 				int iter = 0;
@@ -2219,7 +2606,7 @@ namespace AM
 				}
 				if (!found)
 				{
-					Track trck;
+					TrackInfo trck;
 					trck.id = trckPpl[i].id;
 					trck.trajectory.push_back(pos);
 					tracks.push_back(trck);

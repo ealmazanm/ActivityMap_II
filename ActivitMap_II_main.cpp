@@ -1,6 +1,8 @@
 #pragma once
 #include "PplDetection_v1.h"
 #include "PplTracker_v1.h"
+#include "MergeMeasurement_GT.h"
+#include "visualizeGT.h"
 #include <vld.h>
 
 /*
@@ -47,4 +49,13 @@ int main(int argc, char* argv[])
 	PplTracker_v1 pplTrack;
 	pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
 	//VLDReportLeaks();
+
+	//To ground truth merge measurements
+	 //MergeMeasurement_GT mmGt;
+	 //mmGt.generateGT(fromVideo, recordOut, tilt, debug);
+	 //mmGt.visualizeGT();
+	//For aggregated images
+	//visualizeGT vis;
+	//vis.visualize(tilt,debug);
+	return 0;
 }

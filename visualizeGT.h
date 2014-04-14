@@ -18,17 +18,13 @@ using namespace cv;
 using namespace xn;
 using namespace AM;
 
-class PplTracker_v1
+
+class visualizeGT
 {
 public:
+	visualizeGT(void);
+	~visualizeGT(void);
 
-	PplTracker_v1(void);
-	~PplTracker_v1(void);
-
-	void trackingMoA(int fromVideo, int recordOut, int tilt, int debug);
-
-private:
-	void writeTrackingResults(vector<TrackInfo>& tracks);
-
+	void visualize(int tilt, int debug);
 };
 
