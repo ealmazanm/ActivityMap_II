@@ -22,8 +22,8 @@ struct RPSDetections
 	int idFrame;
 	double area;
 	int measId;
-	EllipseParam prmsRPS;
-	EllipseParam prmsMoA;
+	AM::EllipseParam prmsRPS;
+	AM::EllipseParam prmsMoA;
 	bool merge;
 };
 

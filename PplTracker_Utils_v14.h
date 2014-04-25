@@ -1,12 +1,23 @@
 #pragma once
 #include <Utils.h>
 #include <vld.h>
-
+#include "hungarian.h"
 #include <tinystr.h>
 #include <tinyxml.h>
 
-namespace AM
+namespace AMv14
 {
+	//TRACKING SETUP
+		static const int DA_TYPE_NN = 0;
+		static const int DA_TYPE_GNN = 1;
+		static const int DA_TYPE = DA_TYPE_GNN;
+
+		static const int DA_FEAT_SPATIAL = 0;
+		static const int DA_FEAT_APPEARANCE = 1;
+		static const int DA_FEATURE = DA_FEAT_APPEARANCE;
+
+		static const float UPDATE_RATE = 0;
+
 	//INTERVALS TIME EXECUTION
 		static const int TOTAL_INTERVALS = 10;
 		static const int BSUB_ID = 0;
@@ -103,7 +114,7 @@ namespace AM
 			//int totalColours;
 		};
 
-		static int AREA_THRESHOLD = 160;
+		static int AREA_THRESHOLD = 115;
 		static int GATING_THRESHOLD = 4;
 		struct Person
 		{
@@ -202,7 +213,7 @@ namespace AM
 		static const int DTC_FULL = 0;
 		static const int DTC_MERGE = 1;
 		static const int DTC_SPLIT = 2;
-		static const int TRACKLOST_THRESHOLD = 10;
+		static const int TRACKLOST_THRESHOLD = 5;
 		static const int EUCLIDEAN_THRESHOLD = 150;
 		//Update linear model
 		static float valsH[] = {1, 0, 0, 0, 0, 1, 0, 0};
@@ -581,6 +592,22 @@ namespace AM
 			return out;
 		}
 
+		static void printValuesUchar(const Mat* m, char* title, ostream& out)
+		{
+			out << title << endl;
+			for (int i = 0; i < m->rows; i++)
+			{
+				const uchar* ptr = m->ptr<uchar>(i);
+				for (int j = 0; j < m->cols; j++)
+				{
+					out << (int)ptr[j] << " ";
+				}
+				out << endl;
+			}
+			out << endl;
+		}
+
+
 		static void printValuesF(const Mat* m, char* title, ostream& out)
 		{
 			out << title << endl;
@@ -928,54 +955,44 @@ namespace AM
 					//If the point is whithin the height range of a person
 					if (height < MODEL_MAX_HEIGHT && height > MODEL_MIN_HEIGHT)
 					{
-						int bin = (MODEL_MAX_HEIGHT - height)/MODEL_BINRANGE;
-						
-						//Fill the debug image of the apperance						
-						int rowPos = prs->countApperance[bin]/ttlColsApp;
-						int colPos = (prs->countApperance[bin]%ttlColsApp + 50);
-						prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3] = (uchar)colour->nBlue;
-						prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3+1] = (uchar)colour->nGreen;
-						prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3+2] = (uchar)colour->nRed;
-						prs->countApperance[bin]++;
-
+						int bin = (MODEL_MAX_HEIGHT - height)/MODEL_BINRANGE;						
+						if (debug > DEBUG_NONE)
+						{
+							//Fill the debug image of the apperance						
+							int rowPos = prs->countApperance[bin]/ttlColsApp;
+							int colPos = (prs->countApperance[bin]%ttlColsApp + 50);
+							prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3] = (uchar)colour->nBlue;
+							prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3+1] = (uchar)colour->nGreen;
+							prs->apperance.ptr<uchar>(bin*50+rowPos)[colPos*3+2] = (uchar)colour->nRed;
+							prs->countApperance[bin]++;
+						}
 						gaussianParam* modelBinColour = prs->colourModel + bin;
 
-						//if (modelBinColour->totalColours == MAX_POINTS_BIN)
-						//{
-						//	outDebugFile << "BuildAppearanceModel:ERROR Reached maximum number of points per bin. Info: BinId: " << bin <<" TotalPoints: " << modelBinColour-> totalColours << 
-						//		"Max_Points_bin: " << MAX_POINTS_BIN << endl;
-						//}
-						//else
+						int numBinPnts = prs->heightModel[bin];
+							
+						//update the model (height, colour)
+						if (numBinPnts > 0)	
 						{
-							//modelBinColour->colours[modelBinColour->totalColours++] = colour;
-
-							int numBinPnts = prs->heightModel[bin];
-								
-							//update the model (height, colour)
-							if (numBinPnts > 0)	
-							{
-								(*modelBinColour).mean(0) = (colour->nRed + numBinPnts * (*modelBinColour).mean(0))/(numBinPnts+1);
-								(*modelBinColour).mean(1) = (colour->nGreen + numBinPnts * (*modelBinColour).mean(1))/(numBinPnts+1);
-								(*modelBinColour).mean(2) = (colour->nBlue + numBinPnts * (*modelBinColour).mean(2))/(numBinPnts+1);
-							}
-							else
-								prs->colourModel[bin].mean = Scalar(colour->nRed, colour->nGreen, colour->nBlue);
-
-							//for the covariance
-							(*modelBinColour).rr += powf(colour->nRed,2);
-							(*modelBinColour).gg += powf(colour->nGreen,2);
-							(*modelBinColour).bb += powf(colour->nBlue,2);
-							(*modelBinColour).rg += colour->nRed * colour->nGreen;
-							(*modelBinColour).rb += colour->nRed * colour->nBlue;
-							(*modelBinColour).gb += colour->nGreen * colour->nBlue;
-
-							prs->heightModel[bin]++;
-							if (debug >= DEBUG_MED && frames == 96 && prs->id == 1)
-							{
-								outPersModel << height << " " << (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
-							}
+							(*modelBinColour).mean(0) = (colour->nRed + numBinPnts * (*modelBinColour).mean(0))/(numBinPnts+1);
+							(*modelBinColour).mean(1) = (colour->nGreen + numBinPnts * (*modelBinColour).mean(1))/(numBinPnts+1);
+							(*modelBinColour).mean(2) = (colour->nBlue + numBinPnts * (*modelBinColour).mean(2))/(numBinPnts+1);
 						}
+						else
+							prs->colourModel[bin].mean = Scalar(colour->nRed, colour->nGreen, colour->nBlue);
 
+						//for the covariance
+						(*modelBinColour).rr += powf(colour->nRed,2);
+						(*modelBinColour).gg += powf(colour->nGreen,2);
+						(*modelBinColour).bb += powf(colour->nBlue,2);
+						(*modelBinColour).rg += colour->nRed * colour->nGreen;
+						(*modelBinColour).rb += colour->nRed * colour->nBlue;
+						(*modelBinColour).gb += colour->nGreen * colour->nBlue;
+
+						prs->heightModel[bin]++;
+						if (debug >= DEBUG_MED && frames == 96 && prs->id == 1)
+						{
+							outPersModel << height << " " << (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
+						}
 					}
 					else
 					{
@@ -988,6 +1005,7 @@ namespace AM
 			for (int j = 0; j < MODEL_NBINS; j++)
 			{
 				int numBinPnts = prs->heightModel[j];
+
 				if (numBinPnts > 0)
 				{
 					gaussianParam* mbc = prs->colourModel + j;
@@ -1003,21 +1021,25 @@ namespace AM
 					cov->at<float>(2,1) = mbc->gb/numBinPnts - (mbc->mean(1)*mbc->mean(2));
 					cov->at<float>(2,2) = mbc->bb/numBinPnts - powf(mbc->mean(2),2);		
 
-					//fill the mean colour in the apperance image
-					int red = mbc->mean.val[0];
-					int green = mbc->mean.val[1];
-					int blue = mbc->mean.val[2];
-					int step = j*50;
-					for (int y = 0; y < 50; y++)
+					if (debug > DEBUG_NONE)
 					{
-						uchar* ptr = prs->apperance.ptr<uchar>(y+step);
-						for (int x = 0; x < 50; x++)
+						//fill the mean colour in the apperance image
+						int red = mbc->mean.val[0];
+						int green = mbc->mean.val[1];
+						int blue = mbc->mean.val[2];
+						int step = j*50;
+						for (int y = 0; y < 50; y++)
 						{
-							ptr[x*3] = blue;
-							ptr[x*3+1] = green;
-							ptr[x*3+2] = red;
+							uchar* ptr = prs->apperance.ptr<uchar>(y+step);
+							for (int x = 0; x < 50; x++)
+							{
+								ptr[x*3] = blue;
+								ptr[x*3+1] = green;
+								ptr[x*3+2] = red;
+							}
 						}
 					}
+
 				}
 			}
 		}
@@ -1142,7 +1164,7 @@ namespace AM
 
 						//Todo build appearance model
 						startTime = clock();
-						//buildAppearanceModel(b, prs, pntsMap2, debug, debugFrame, frames);
+						buildAppearanceModel(b, prs, pntsMap2, debug, debugFrame, frames);
 						totalSubIntervalsDetection[BUILDAPPEARANCE_ID] += clock() - startTime; //time debugging
 
 						startTime = clock();
@@ -1691,64 +1713,29 @@ namespace AM
 				else 
 					color = Scalar(0,0,255);
 
-					//To display the ellipse of the detection in comparison with the updated tracked ellipse
-					if (debug >= DEBUG_MED)
-					{
-//						if (p->id == 1 && frames == 80)
-//							printValuesF(&p->stateUncertainty, "State uncertainty before drawing ellipse", outDebugFile);
-						//Associated measurement ellipse
-						//if (p->associated)
-						//	drawPersonPointsCov_debug(p->meanDtction, p->covDtction, &moa, Scalar(0,0,255), -1);
-
-						//uncertainty
-						Scalar c = Scalar(0,0,255);
-						if (!p->associated)
-							c = Scalar(0,0,0);
-						
-						//float range = sqrtf(pow(p->mean3D.X,2) + pow(p->mean3D.Z,2));
-						//float scale = ((0.33*log(10+3*range/1000))-0.80597) + 2;
-						//printValuesF(&p->innUncertainty, "Innovatin uncertainty", cout);
-						drawGatinArea(p->innUncertainty, p->mean_noupdate, &moa, Scalar(255,0,0),NULL);
-
-						//drawPersonPointsCov_debug(p->mean_noupdate, p->stateUn_noupdate, &moa, Scalar(250, 0,0), 1);
-						//drawPersonPointsCov_debug(meanMoA, p->stateUncertainty, &moa, c, 1);
-
-						//The error measurement
-						//printValuesF(&p->rotation, "Rotation matrix III", outDebugFile);
-						//printValuesF(&p->R, "Error Measurement", outDebugFile);
-						//drawPersonPointsCov_debug(meanMoA, p->R, &moa, Scalar(20,20,20), 1);
-
-						//if (p->id == 0)
-						//	printValuesF(&p->stateUncertainty, "Uncertainty of the state(updated)", outDebugFile);
-
-						//The euclidean validated region
-						//Point p1 = Point(meanMoA.x-p->euclThresh, meanMoA.y - p->euclThresh);
-						//Point p2 = Point(meanMoA.x + p->euclThresh, meanMoA.y + p->euclThresh);
-						//rectangle(moa, p1, p2, Scalar::all(0));
+				//Tracking ellipse
+				char txt[15];
+				itoa(p->id, txt, 10);
 					
-					}
-
-					//Tracking ellipse
-					char txt[15];
-					itoa(p->id, txt, 10);
-					//putText(moa, txt, meanMoA,FONT_HERSHEY_PLAIN, 0.8, Scalar(0,0,255));
-
-					drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2, txt);
+				//phisical extent
+				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2, txt);
+				//uncertainty
+				//drawPersonPointsCov_debug(meanMoA, p->innUncertainty, &moa, color, 2, txt);
 					
-					if (debug >= DEBUG_MED)
+				if (debug >= DEBUG_MED)
+				{
+					//drawPersonPointsCov_debug(p->meanMoA2, p->covMoA2, &moa, Scalar::all(0));
+					//Display the mapping of the rps points along with the ellipse of the distribution
+					int ttl = p->moAPoints.size();
+					for (int i = 0; i < ttl; i++)
 					{
-						//drawPersonPointsCov_debug(p->meanMoA2, p->covMoA2, &moa, Scalar::all(0));
-						//Display the mapping of the rps points along with the ellipse of the distribution
-						int ttl = p->moAPoints.size();
-						for (int i = 0; i < ttl; i++)
-						{
-							Point pnt = p->moAPoints[i];
-							uchar* ptr = moa.ptr<uchar>(pnt.y);
-							ptr[3*pnt.x] = color.val[0];
-							ptr[3*pnt.x+1] = color.val[1];
-							ptr[3*pnt.x+2] = color.val[2];
-						}
+						Point pnt = p->moAPoints[i];
+						uchar* ptr = moa.ptr<uchar>(pnt.y);
+						ptr[3*pnt.x] = color.val[0];
+						ptr[3*pnt.x+1] = color.val[1];
+						ptr[3*pnt.x+2] = color.val[2];
 					}
+				}
 			}
 		}
 
@@ -1798,16 +1785,19 @@ namespace AM
 			p->stateMoA = p->A * p->stateMoA;
 
 			//CovMoA is the covariance projected from the detection
-			if (p->associated) //from last frame. It does not increase its uncertainty if there were not measurement
-				p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
-			
+			p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
+			if (p->lost > 0) //reduced the uncertainty because it was not reduced during the upate process
+			{
+				p->stateUncertainty *= 0.5;
+				//printValuesF(&p->stateUncertainty, "Uncertainty", outDebugFile);
+			}
+
 			Mat innUncertainty = H * p->stateUncertainty * H.t() + p->R;
 			innUncertainty.copyTo(p->innUncertainty);
 
 			//updates the measurement error (range dependent) and the euclidean gatting area
 			setTimeVariantParameters(p, debug, frames);
 		}
-
 
 
 		/*
@@ -1822,7 +1812,7 @@ namespace AM
 			{
 				int p1Bin = p1.heightModel[i];
 				int p2Bin = p2.heightModel[i];
-				if (p1Bin > 0 && p2Bin > 0) //Only bins with data in both models
+				if (p1Bin > 50 && p2Bin > 50) //Only bins with data in both models
 				{
 					ttlP1 += p1Bin;
 					ttlP2 += p2Bin;
@@ -1847,18 +1837,28 @@ namespace AM
 			}
 		}
 
+		static float mvnpdf(const Scalar& x, const Scalar& mu, Mat& S)
+		{
+			//Means subtraction
+			Mat meanSub = Mat(3,1, CV_32F);
+			meanSub.at<float>(0) = x.val[0] - mu.val[0]; //r
+			meanSub.at<float>(1) = x.val[1] - mu.val[1]; //g
+			meanSub.at<float>(2) = x.val[2] - mu.val[2]; //b
+
+			Mat mahalanobisDist = meanSub.t() * S.inv() * meanSub;
+
+			float mDist = mahalanobisDist.at<float>(0);
+			float normTerm = 1/(2*CV_PI*sqrt(2*CV_PI)*sqrtf(determinant(S)));
+
+			return normTerm * exp(-mDist/2);
+		}
+
 		static float bhattacharyaDist_Cont(const gaussianParam* trgt, const gaussianParam* cndt, int debug, int frames)
 		{
-			//dist = 8pi det(S_tgt*S_cndt)^(1/4) * exp( (Mean_trt - Mea_cndt)' * S^-1 * (Mean_trt - Mean_cndt) )/2 )
+			//dist = 8pi sqrt(2pi) det(S_tgt*S_cndt)^(1/4) * (1 / (2pi * sqrt(2pi) * det(2*(S_tgt+S_cndt)))exp( (Mean_trt - Mea_cndt)' * S^-1 * (Mean_trt - Mean_cndt) )/2 )
 
 			Mat S_trgt = trgt->cov;
 			Mat S_cndt = cndt->cov;
-
-			//Means subtraction
-			Mat meanSub = Mat(3,1, CV_32F);
-			meanSub.at<float>(0) = trgt->mean(0) - cndt->mean(0);
-			meanSub.at<float>(1) = trgt->mean(1) - cndt->mean(1);
-			meanSub.at<float>(2) = trgt->mean(2) - cndt->mean(2);
 
 			//Pooled sigma
 			if (determinant(S_cndt) < 0.0001)
@@ -1871,27 +1871,15 @@ namespace AM
 			Mat S1 = S_trgt + S_cndt;
 			Mat S2 = 2*S1;
 			Mat S3 = S_trgt*S_cndt;
-			Mat S2_Inv = S2.inv();
+
 			double S1det = determinant(S1);
 			double S3det = determinant(S3);
 
-
-			if (debug == DEBUG_MED && frames == 96)
-			{
-				Utils::printValuesF(&trgt->cov, "Covariance target", outDebugFile);
-				Utils::printValuesF(&cndt->cov, "Covariance CAndidate", outDebugFile);
-				Utils::printValuesF(&S1, "pooled Cov(strgt+scndt)", outDebugFile);
-				outDebugFile << "Det(Strg + Scndt): " << S1det << endl;
-				Utils::printValuesF(&S2_Inv, "pooled Cov inv", outDebugFile);
-			}
-	 	
-			Mat mahalanobisDist = meanSub.t() * S2_Inv * meanSub;
-			float mDist = mahalanobisDist.at<float>(0);
-			float normTerm = (sqrtf(2)* powf( S3det, 0.25))/ sqrtf(S1det);
 			if (S1det != 0 && S3det != 0)
 			{
-				float out = normTerm * exp(-mDist/2);
-				return out;
+				float prob = mvnpdf(trgt->mean, cndt->mean, S2);
+				float constTerm = 8*CV_PI*sqrt(2*CV_PI)*powf(S3det,0.25);
+				return constTerm * prob;
 			}
 			else
 			{
@@ -1899,6 +1887,43 @@ namespace AM
 					" det(Strgt*Scndt): " << S3det << endl;
 				return -1;
 			}
+		}
+
+		static float compareModels_II(const Person* target, const Person* candidate, int debug, int frames)
+		{
+			//copy models
+			Person trgtCpy = *target;
+			Person cndtCpy = *candidate;
+
+			normalizeModels(trgtCpy, cndtCpy);
+
+			float bCoeff = 0;
+
+			for (int i = 0; i < MODEL_NBINS; i++)
+			{
+				//Using the mean colours
+				//bCoeff += sqrtf(trgtCpy.heightModel[i] * cndtCpy.heightModel[i] * compareColours(trgtCpy.colourModel[i].mean, cndtCpy.colourModel[i].mean));
+				//Using the colour distributions
+				float hT = trgtCpy.heightModel[i];
+				float hC = cndtCpy.heightModel[i];
+				if (hT > 0 && hC > 0)
+				{
+					gaussianParam colourT = trgtCpy.colourModel[i];
+					gaussianParam colourC = cndtCpy.colourModel[i];
+					
+					float hBinD = sqrtf(hT*hC);
+					float colourBinD = 2*bhattacharyaDist_Cont(&colourT, &colourC, debug, frames); //multiplied by 2 to scale to 1
+
+					if (debug == DEBUG_HIGH)
+						outDebugFile << "Bin " << i << " Height comparison: " << hBinD << ". ColourComarison: " << colourBinD << endl;
+
+			
+					bCoeff += hBinD*colourBinD;			
+				}
+			}
+			if (bCoeff > 1)
+				cout << "Stop" << endl;
+			return bCoeff;
 		}
 
 		/*
@@ -1983,7 +2008,7 @@ namespace AM
 		*/
 		static void gateDetectionNNeigh(Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person*& candidate, int debug, int frames)
 		{
-			target->innUncertainty = H*target->stateUncertainty*H.t() + target->R;
+			//target->innUncertainty = H*target->stateUncertainty*H.t() + target->R;
 
 			Mat tgtMean = H*target->stateMoA;
 			target->mean_noupdate.x = tgtMean.at<float>(0);
@@ -2017,7 +2042,7 @@ namespace AM
 				if (pos > -1 && dtctPpl[pos].control == DTC_MERGE)
 					dtctPpl[pos].numAsso++;
 			
-			outDataAss << target->id << " " << frames << " " << numValidatedMeas << endl;
+			//outDataAss << target->id << " " << frames << " " << numValidatedMeas << endl;
 		}
 
 		static void gateDetection(const Person* target,  Person* dtctPpl, int ttl_dtctPpl, Person** gPpl, int& ttl_gPpl, int debug)
@@ -2108,49 +2133,6 @@ namespace AM
 
 
 		/*
-		Update the target state (x,y,vx,vy) from the measurement state through the kalman equations 
-		*/
-		static void updateState(Person* trgt, Person* msr, float dComp, int debug, int frames)
-		{
-			//Biggest R entails smallest K and viceversa
-			Mat K = trgt->stateUncertainty * H.t() * trgt->innUncertainty.inv();
-			K.copyTo(trgt->K);
-
-			//2x1 location of measurement
-			Mat msreState = msr->stateMoA(Rect(0,0,1,2));
-			//2x1 location of the target
-			Mat trgtState = trgt->stateMoA(Rect(0,0,1,2));
-			//UPDATE EQUATION
-			trgt->stateMoA = trgt->stateMoA + trgt->K*(msreState - H*trgt->stateMoA);
-	
-			trgt->lost = 0;
-			trgt->associated = true;
-			//Update the location in the remap polar space
-			trgt->mean_RPS = msr->mean_RPS;
-			trgt->sigmaX_RPS = msr->sigmaX_RPS;
-			trgt->sigmaY_RPS = msr->sigmaY_RPS;
-			trgt->idDetection = msr->id;
-			msr->apperance.copyTo(trgt->apperance);
-			msr->covMoA_points.copyTo(trgt->covMoA_points);
-			//For the representation of the ellipse.
-			msr->covMoA2.copyTo(trgt->covMoA2);
-			trgt->meanMoA2 = msr->meanMoA2;
-			trgt->moAPoints = msr->moAPoints;
-			trgt->meanDtction = msr->meanDtction;
-			msr->covDtction.copyTo(trgt->covDtction);
-			trgt->mean3D = msr->mean3D;
-			trgt->control = msr->control;
-			msr->rotation.copyTo(trgt->rotation);
-			msr->associated = true;
-			
-
-			//update the covariance 
-			Mat I = Mat::eye(4,4,CV_32F);
-			trgt->stateUncertainty = (I - (trgt->K*H))*trgt->stateUncertainty;
-
-		}
-
-		/*
 		Updates the model considereing the different bins
 		*/
 		static void updateModel(Person* target, const Person* msr)
@@ -2160,35 +2142,90 @@ namespace AM
 			{
 				int numHeightMsr = msr->heightModel[i];
 				int numHeightTrgt = target->heightModel[i];
-				if (numHeightMsr > 0)
+				if (numHeightMsr > 50)
 				{
 					//case 1: full update
-					if (numHeightTrgt > 0)
+					if (numHeightTrgt > 50)
 						updateCoeff = ALPHA;
 			
 					//Case 2: slow update
 					else 
 						updateCoeff = BETA;
 		
-					//update hight
+					//update height
 					target->heightModel[i] = numHeightTrgt*(1 - updateCoeff) + numHeightMsr*updateCoeff;
 					//update colour
 					gaussianParam* clrMdlTrgt = &target->colourModel[i];
 					const gaussianParam* clrMdlCndt = &msr->colourModel[i];
-					for (int c = 0; c < 3; c++)
-					{
-						clrMdlTrgt->mean(c) = clrMdlTrgt->mean(c)*(1 - updateCoeff) + clrMdlCndt->mean(c)*updateCoeff;	
 
-						float* covTgt = clrMdlTrgt->cov.ptr<float>(c);
-						const float* covCndt = clrMdlCndt->cov.ptr<float>(c);
-						for (int r = 0;  r < 3; r++)
-							covTgt[r] =covTgt[r]*(1 - updateCoeff) + covCndt[r]*updateCoeff;
-				
-					}
+					Mat tgtCov = clrMdlTrgt->cov * (1 - updateCoeff) + clrMdlCndt->cov*updateCoeff;
+					tgtCov.copyTo(clrMdlTrgt->cov);
+
+					Scalar s = clrMdlTrgt->mean*(1-updateCoeff)  + clrMdlCndt->mean*updateCoeff;
+					clrMdlTrgt->mean = s;
 				}
 			}
 
 		}
+
+
+		/*
+		Update the target state (x,y,vx,vy) from the measurement state through the kalman equations 
+		*/
+		static void updateState(Person* trgt, Person* msr, int debug, int frames)
+		{
+			Mat K = trgt->stateUncertainty * H.t() * trgt->innUncertainty.inv();
+			if( msr->control == DTC_MERGE)
+			{
+				//Biggest R entails smallest K and viceversa
+				K *= UPDATE_RATE; //Reduces the weight of the measurement			
+			}
+
+			K.copyTo(trgt->K);
+
+			//2x1 location of measurement
+			Mat msreState = H*msr->stateMoA;
+			//2x1 location of the target
+			//UPDATE STATE
+			trgt->stateMoA = trgt->stateMoA + trgt->K*(msreState - H*trgt->stateMoA);
+			//UPDATE COVARIANCE
+			Mat I = Mat::eye(4,4,CV_32F);
+			trgt->stateUncertainty = (I - (trgt->K*H))*trgt->stateUncertainty;
+	
+			trgt->lost = 0;
+
+			if (msr->control != DTC_MERGE)
+			{				
+				trgt->associated = true;
+				//Update the location in the remap polar space
+				trgt->mean_RPS = msr->mean_RPS;
+				trgt->sigmaX_RPS = msr->sigmaX_RPS;
+				trgt->sigmaY_RPS = msr->sigmaY_RPS;
+				trgt->idDetection = msr->id;
+				msr->apperance.copyTo(trgt->apperance);
+				msr->covMoA_points.copyTo(trgt->covMoA_points);
+				//For the representation of the ellipse.
+				msr->covMoA2.copyTo(trgt->covMoA2);
+				trgt->meanMoA2 = msr->meanMoA2;
+				trgt->moAPoints = msr->moAPoints;
+				trgt->meanDtction = msr->meanDtction;
+				msr->covDtction.copyTo(trgt->covDtction);
+				trgt->mean3D = msr->mean3D;
+				trgt->control = msr->control;
+				msr->rotation.copyTo(trgt->rotation);
+				msr->associated = true;
+
+				updateModel(trgt, msr);
+			}
+			else
+			{
+				msr->associatedIds.push_back(trgt->id);
+				trgt->associated = false;
+				trgt->control = DTC_MERGE;
+			}
+
+		}
+
 
 		/*
 		Create a new list without the losts and with the new tracks
@@ -2437,7 +2474,7 @@ namespace AM
 
 		}
 
-		static void look4Merges(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl)
+		static void look4Merges(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, vector<int>& mergesId, vector<int>& numAssociations, int frames)
 		{
 			//A merge detection is set if two or more targets fall within the gating area
 			for (int i = 0; i < ttl_dtctPpl; i++)
@@ -2461,13 +2498,361 @@ namespace AM
 					{
 						dtc->control = DTC_MERGE;
 						dtc->numAsso = 0;
+						mergesId.push_back(i);
+						numAssociations.push_back(n);
 					}
 				}
+			}
+		}
+		
 
+		//Based on the mahalanobis distance
+		static float associationCost(Person& t, Person& d)
+		{
+			Mat tgtMean = H*t.stateMoA;
+			t.mean_noupdate.x = tgtMean.at<float>(0);
+			t.mean_noupdate.y = tgtMean.at<float>(1);
+		
+			Mat innUncertInv = t.innUncertainty.inv();
+			return mahalanobis(&tgtMean, &innUncertInv, &d);
+			
+			/*if (c < GATING_THRESHOLD)
+				return c;
+			else
+				return 1000;*/
+
+		}
+
+		static Mat buildCostMatrix_Appearance(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, int debug, int frames)
+		{
+			Mat costMt = Mat(ttl_trckPpl, ttl_dtctPpl, CV_32FC1);
+			
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				float* ptr = costMt.ptr<float>(i);
+				for (int j = 0; j < ttl_dtctPpl; j++)
+				{
+					float mD = associationCost(trckPpl[i], dtctPpl[j]); //Spatial mahalanobis distance
+					if (mD > GATING_THRESHOLD) //gate region
+						ptr[j] = 0;
+					else
+					{
+						if (dtctPpl[j].control == DTC_MERGE) //Merge : the appearance will return a wrong value - so the distance is used.
+							ptr[j] = exp(-mD);
+						else
+							ptr[j] = compareModels_II(&(trckPpl[i]), &(dtctPpl[j]), debug, frames);
+					}
+				}
+				
+			}
+			return costMt;
+		}
+
+
+		static Mat buildCostMatrix_Spatial(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl)
+		{
+			Mat costMt = Mat(ttl_trckPpl, ttl_dtctPpl, CV_32FC1);
+
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				float* ptr = costMt.ptr<float>(i);
+				for (int j = 0; j < ttl_dtctPpl; j++)
+				{
+					float mD = associationCost(trckPpl[i], dtctPpl[j]);
+					if (mD > GATING_THRESHOLD)
+						ptr[j] = 0;
+					else
+						ptr[j] = exp(-mD);
+				}
+			}
+			return costMt;
+		}
+
+		static Mat greedyAssociation(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat& costMt)
+		{
+			Mat assocMt = Mat::zeros(ttl_trckPpl, ttl_dtctPpl, CV_8UC1);
+
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				float* ptrC = costMt.ptr<float>(i);
+				uchar* ptrA = assocMt.ptr<uchar>(i);
+
+				int pClosest = -1;
+				float maxSim = 0;
+
+				for (int j = 0; j < ttl_dtctPpl; j++)
+				{
+					Person* p = &(dtctPpl[j]);
+					if (!p->associated || (p->associated && p->control == DTC_MERGE))
+					{
+						float sim = ptrC[j];
+						if (sim > maxSim)
+						{
+							maxSim = sim;
+							pClosest = j;
+						}
+					}
+				}
+				
+				if (pClosest != -1)
+				{
+					dtctPpl[pClosest].associated = true;
+					assocMt.at<uchar>(i, pClosest) = 1;
+				}
+			}
+			return assocMt;
+		}
+
+		static Mat buildExtCostMt(Person*& dtctPpl, int ttl, Mat& costMx)
+		{
+			int n = 0;
+			for (int i = 0; i < ttl; i++)
+			{
+				if (dtctPpl[i].control == DTC_MERGE)
+					n++;
+			}
+
+			Mat extMat = Mat(costMx.rows, costMx.cols + n, CV_32FC1);
+
+			
+			int ttlRowsExt = extMat.rows;
+			int ttlColsExt = extMat.cols;
+			for (int i = 0; i < ttlRowsExt; i++)
+			{
+				n = 0;
+				float* ptrExt = extMat.ptr<float>(i);
+				float* ptr = costMx.ptr<float>(i);
+				for (int j = 0; j < ttlColsExt; j++)
+				{
+					ptrExt[j] = ptr[j-n];
+					
+					if (dtctPpl[j-n].control == DTC_MERGE)
+						n++;					
+				}
+			}
+			return extMat;
+		}
+
+		static Mat GNNAssociation(int ttlCols, vector<int>& mergesId, vector<int>& nAssoc, Mat& costMxExt, int frames)
+		{
+			  hungarian_problem_t p;
+
+			  int ttlRowsExt = costMxExt.rows;
+			  int ttlColsExt = costMxExt.cols;
+			  int ttlRows = costMxExt.rows;
+			 
+			  //allocate memory
+			  float** m = new float*[ttlRowsExt];
+			  for (int i = 0; i < ttlRowsExt; i++)
+				  m[i] = new float[ttlColsExt];
+			  
+
+			  //fill the array with the cost values
+			  for (int i = 0; i < ttlRowsExt; i++)
+				  for (int j = 0; j < ttlColsExt; j++)
+					  m[i][j] = costMxExt.at<float>(i,j);
+
+
+			  /* initialize the hungarian_problem using the cost matrix*/
+			  int matrix_size = hungarian_init(&p, m , ttlRowsExt, ttlColsExt, HUNGARIAN_MODE_MAXIMIZE_UTIL) ;
+			  
+			  /* solve the assignement problem */
+			  hungarian_solve(&p);
+
+			  //Creates the association matrix Ext
+			  Mat assocMtExtII = Mat::zeros(ttlRowsExt, ttlColsExt, CV_8UC1);
+			  Mat assocMt = Mat::zeros(ttlRows, ttlCols, CV_8UC1);
+			  for (int i = 0; i < ttlRowsExt; i++)
+			  {
+				  uchar* ptr = assocMtExtII.ptr<uchar>(i);
+				  for (int j = 0; j < ttlColsExt; j++)
+				  {
+					  int a = p.assignment[i][j];
+					  ptr[j] = a;
+				  }
+			  }
+
+			  			
+			  //Creates the final association matrix
+			  Rect r =  Rect(0,0, ttlCols, ttlRows);
+			  Mat roiAssoc = assocMtExtII(r);
+			  roiAssoc.copyTo(assocMt);
+
+			  int colId = ttlCols;
+			  for (int i = 0; i < mergesId.size(); i++)
+			  {
+				  for (int j = 0; j < nAssoc[i]-1; j++)
+				  {				  
+					  for (int k = 0; k < ttlRows; k++)
+					  {
+						  if (assocMtExtII.at<uchar>(k, colId) == 1)
+							  assocMt.ptr<uchar>(k)[mergesId[i]] = 1;
+					  }
+					  colId ++;
+				  }
+			  }
+
+			  /* free used memory */
+			  hungarian_free(&p);
+  
+			  //deallocate memory
+			  for (int i = 0; i < ttlRows; i++)
+			  {
+				  delete[] m[i];
+			  }
+			  delete[] m;
+
+			  return assocMt;
+
+		}
+
+		static Mat augmentCostMatrix(Mat& costMx, vector<int>& mergesId, vector<int>& nAssoc)
+		{
+			//Augment for merge measurements
+			int ttlExtrCols = 0;
+			for (int i = 0; i < nAssoc.size(); i++)
+				ttlExtrCols += (nAssoc[i]-1);
+
+			int ttlRows = costMx.rows;
+			int ttlCols = costMx.cols;
+						
+			Mat costMxExt = Mat(ttlRows, ttlCols+ttlExtrCols, CV_32FC1);
+			Rect roi = Rect(0,0, ttlCols, ttlRows);
+			Mat costExtRoi = costMxExt(roi);
+			costMx.copyTo(costExtRoi);
+
+			int ttlMerges = mergesId.size();
+			int colIndx = ttlCols;
+			for (int i = 0 ; i < ttlMerges; i++)
+			{
+				//roi cost
+				Rect rCost = Rect(mergesId[i], 0, 1, ttlRows);
+				Mat roiCost = costMx(rCost);
+
+				int ttl = nAssoc[i] - 1;
+				for (int j = 0; j < ttl; j++)
+				{
+					Rect rCostExt = Rect(colIndx, 0, 1, ttlRows);
+					Mat roiCostExt = costMxExt(rCostExt);
+					roiCost.copyTo(roiCostExt);
+					colIndx++;
+				}
+			}
+
+			int ttlRowsExt = costMxExt.rows;
+			int ttlColsExt = costMxExt.cols;
+
+			//Augment for missing detections
+			Mat tmp = Mat::zeros(ttlRows, ttlCols, CV_32FC1) + 0.01;
+			Mat costMxExtII = Mat(ttlRows, (ttlColsExt + ttlCols), CV_32FC1);
+			roi = Rect(0,0, ttlColsExt, ttlRowsExt);
+			Mat roiMt = costMxExtII(roi);
+			costMxExt.copyTo(roiMt);
+
+			roi = Rect(ttlColsExt, 0, ttlCols, ttlRowsExt);
+			roiMt = costMxExtII(roi);
+			tmp.copyTo(roiMt);
+
+			return costMxExtII;
+
+		}
+
+
+		static Mat dataAssociation(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, vector<int>& mergesId, vector<int>& nAssoc, int debug, int frames)
+		{
+
+			//create cost matrix
+			Mat costMatrix;
+			if (DA_FEATURE == DA_FEAT_SPATIAL)
+				costMatrix = buildCostMatrix_Spatial(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+			else
+				costMatrix = buildCostMatrix_Appearance(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, debug, frames);
+			
+			//association
+			if (DA_TYPE == DA_TYPE_NN)
+			{
+			//greedy association
+				return greedyAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
+			}
+			else if (DA_TYPE == DA_TYPE_GNN)
+			{
+			//Optimal association
+				Mat costMatrixExt = augmentCostMatrix(costMatrix, mergesId, nAssoc);
+
+				Mat out = GNNAssociation(ttl_dtctPpl, mergesId, nAssoc, costMatrixExt, frames);
+
+				return out;
+			}
+			else
+			{
+				cout <<"Not implemented yet" << endl;
+				return greedyAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
 			}
 
 		}
 
+		static void KF_Predictions(Person*& trckPpl, int& ttl_trckPpl, int debug, int frames)
+		{
+						
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				Person* target = &trckPpl[i];
+
+				//Predict the state of the target using the motion model.
+				predictState(target, debug, frames);
+			}
+		}
+
+		static void KF_Updates(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat& associationMat, int debug, int frames)
+		{
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				Person* target = &trckPpl[i];
+
+				int pos = -1;
+				int cont = 0;
+				while (pos == -1 && cont < ttl_dtctPpl)
+				{
+					if (associationMat.at<uchar>(i,cont) == 1)
+						pos = cont;
+					cont++;
+				}
+
+				if (pos != -1)
+					//Predict the state of the target using the motion model.
+					updateState(target, &(dtctPpl[pos]), debug, frames);
+				else
+				{
+					target->associated = false;
+					target->lost++;
+					target->moAPoints.clear();
+				}
+			}
+		}
+
+		//Data association (global optimal) Hungarian algorithm
+		static void tracking_GNN(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, vector<DCF>& DCFs, int debug, int frames, ofstream& outDtcAreas)
+		{
+			if (ttl_trckPpl > 0)
+			{
+				//Prediction
+				KF_Predictions(trckPpl, ttl_trckPpl, debug, frames);
+
+				//Merge measurement detection
+				vector<int> mergesId, nAssoc;
+				look4Merges(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, mergesId, nAssoc, frames);
+
+				//Data association			
+				Mat associationMat = dataAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, mergesId, nAssoc, debug, frames);
+
+				//Udpate
+				KF_Updates(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, associationMat, debug, frames);
+			}
+			//initialize and end new targets
+			checkEnd_NewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+		}
+
+		//Data association (semi-greedy) nearest neighbour.
 		static void tracking(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, vector<DCF>& DCFs, int debug, int frames, ofstream& outDtcAreas)
 		{	
 			//Predict the state of all targets
@@ -2479,8 +2864,41 @@ namespace AM
 				predictState(target, debug, frames);
 			}
 			
+			//Based on the area covered by the person Version 1:
+			//look4MergeSplits(dtctPpl, ttl_dtctPpl);
+
 			//Based on the proximity of targets and measurement area. Version 2:
-			look4Merges(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+	//		look4Merges(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
+
+			//Store the area of the detections in a file
+			if (debug >= DEBUG_NONE)
+			{
+				for (int i = 0; i < ttl_dtctPpl; i++)
+				{
+					Person rpsDtc = dtctPpl[i];
+					float area = (2*rpsDtc.sigmaX_RPS) * (2*rpsDtc.sigmaY_RPS);
+												
+					EllipseParam ep;
+					ep.mean = rpsDtc.mean_RPS;
+					ep.covX = rpsDtc.sigmaX_RPS*rpsDtc.sigmaX_RPS;
+					ep.covY = rpsDtc.sigmaY_RPS*rpsDtc.sigmaY_RPS;
+					ep.covXY = 0;
+					EllipseParam epMoA;
+					epMoA.mean = rpsDtc.meanDtction;
+					epMoA.covX = rpsDtc.covDtction.at<float>(0,0);
+					epMoA.covY = rpsDtc.covDtction.at<float>(1,0);
+					epMoA.covXY = rpsDtc.covDtction.at<float>(1,1);
+					int merge = 0;
+					if (rpsDtc.control  == DTC_MERGE)
+						merge = 1;
+
+					outDtcAreas << rpsDtc.idDetection << " " << frames << " " << area << " " << ep.mean.x << " " << ep.mean.y << " "
+						<< ep.covX << " " << ep.covY << " " << merge << " " << epMoA.mean.x << " " << epMoA.mean.y << " " 
+						<< epMoA.covX << " " << epMoA.covY << " " << epMoA.covXY << endl;
+
+				}
+			}
+
 
 			for (int i = 0; i < ttl_trckPpl; i++)
 			{
@@ -2502,29 +2920,21 @@ namespace AM
 					associationNNeigh(target, dtctPpl, ttl_dtctPpl, measur, debug, frames);
 
 					//association(target, dtctPpl, ttl_dtctPpl, measur, compDist, debug, frames);
-
-					if (measur != NULL && measur->control != DTC_MERGE)
+					if (measur != NULL)
 					{
 						//Update the position of the target using the Kalman equations.
-						updateState(target, measur, compDist, debug, frames);
+						updateState(target, measur, debug, frames);
 
 						if (compDist < COMP_THRESHOLD && measur->control == DTC_FULL)
 							updateModel(target, measur);	
 
 					}
-					else if (measur == NULL) // not associated
+					else // not associated
 					{
 						target->associated = false;
 						target->lost++;
 						target->moAPoints.clear();
 					}
-					else
-					{
-						measur->associatedIds.push_back(target->id);
-						target->associated = false;
-						target->control = DTC_MERGE;
-					}
-
 				}
 			}
 

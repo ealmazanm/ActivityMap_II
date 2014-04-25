@@ -1,18 +1,18 @@
-#include "PplTracker_v1.h"
+#include "PplTracker_v14.h"
 #include <vld.h>
 
 
-PplTracker_v1::PplTracker_v1(void)
+PplTracker_v14::PplTracker_v14(void)
 {
 	kin = -1;
 }
 
 
-PplTracker_v1::~PplTracker_v1(void)
+PplTracker_v14::~PplTracker_v14(void)
 {
 }
 
-void PplTracker_v1::pointSelectionHeight_onMouse(int event, int x, int y, int flags, void* param)
+void PplTracker_v14::pointSelectionHeight_onMouse(int event, int x, int y, int flags, void* param)
 {
 	if (event == CV_EVENT_FLAG_LBUTTON)
 	{
@@ -37,9 +37,9 @@ void PplTracker_v1::pointSelectionHeight_onMouse(int event, int x, int y, int fl
 }
 
 
-void PplTracker_v1::writeTrackingResults(vector<TrackInfo>& tracks)
+void PplTracker_v14::writeTrackingResults(vector<TrackInfo>& tracks)
 {
-	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses.txt");
+	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v14.txt");
 	//write on files the tracks for posterior evaluation
 	for (int i = 0; i < tracks.size(); i++)
 	{
@@ -59,10 +59,10 @@ void PplTracker_v1::writeTrackingResults(vector<TrackInfo>& tracks)
 }
 
 
-void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debug)
+void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int debug)
 {
 
-	ofstream outDtcAreas ( "c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\Dset1\\AreaProxResults\\mergeMeasurementsST_160.txt");
+	ofstream outDtcAreas ( "c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\Dset1\\AreaProxResults\\mergeMeasurementsST_115.txt");
 
 	vector<TrackInfo> tracks;
 
@@ -310,7 +310,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					updatePolarAlternateive(&polarAlt, &polar, pntsMap2, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug, i);	
 					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
 
-					if (debug >= DEBUG_MED)
+					if (debug >= DEBUG_NONE)
 					{
 						startTime_tmp = clock();
 						updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
@@ -327,93 +327,13 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 				startTime_tmp = clock();
 				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
-				
+		
 				startTime_tmp = clock();
-				tracking(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, activityMap, DCFs, debug, frames, outDtcAreas);
+				tracking_GNN(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, activityMap, DCFs, debug, frames, outDtcAreas);
 				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
 
-				////Store the area of the detections in a file
-				if (debug >= DEBUG_HIGH)
-				{
-					for (int i = 0; i < ttl_dtctPpl; i++)
-					{
-						Person rpsDtc = dtctPpl[i];
-						float area = (2*rpsDtc.sigmaX_RPS) * (2*rpsDtc.sigmaY_RPS);
-												
-						EllipseParam ep;
-						ep.mean = rpsDtc.mean_RPS;
-						ep.covX = rpsDtc.sigmaX_RPS*rpsDtc.sigmaX_RPS;
-						ep.covY = rpsDtc.sigmaY_RPS*rpsDtc.sigmaY_RPS;
-						ep.covXY = 0;
-						EllipseParam epMoA;
-						epMoA.mean = rpsDtc.meanDtction;
-						epMoA.covX = rpsDtc.covDtction.at<float>(0,0);
-						epMoA.covY = rpsDtc.covDtction.at<float>(1,0);
-						epMoA.covXY = rpsDtc.covDtction.at<float>(1,1);
-						int merge = 0;
-						if (area  > 160)
-							merge = 1;
-
-						outDtcAreas << rpsDtc.idDetection << " " << frames << " " << area << " " << ep.mean.x << " " << ep.mean.y << " "
-							<< ep.covX << " " << ep.covY << " " << merge << " " << epMoA.mean.x << " " << epMoA.mean.y << " " 
-							<< epMoA.covX << " " << epMoA.covY << " " << epMoA.covXY << endl;
-
-
-					}
-				}
-
-
-				//debug - It draws in blue the pixel detected of a person in the image plane
-				if (debug >= DEBUG_HIGH && ttl_trckPpl > 0)
-				{
-					Person* prs =  &trckPpl[0];
-					int c = 1;
-					while (prs->id != 0)
-					{
-						prs = &trckPpl[c];
-						c++;
-					}
-					if (prs->id == 0)
-					{
-						if (prs->lost < TRACKLOST_THRESHOLD)
-						{
-							outDebugFile << "Person Id " << prs->id << ": RPS mean = (" << prs->mean_RPS.x << ", " << prs->mean_RPS.y << "). RPS Sigma = (" << prs->sigmaX_RPS << ", " << prs->sigmaY_RPS << "). " << endl;
-							int ttl = RANGE_ROWS*RANGE_COLS;
-							for (int i = 0; i < ttl; i++)
-							{							
-								vector<PointMapping> pnts = pntsMap2[i];
-								int t1 = pnts.size();
-								for (int j = 0; j < t1; j++)
-								{
-									PointMapping pntMap = pnts[j];
-									if (pntMap.idPerson == prs->idDetection)
-									{
-										uchar* ptr = rgbImages[pntMap.cam].ptr<uchar>(pntMap.p2D.Y);
-										int x = pntMap.p2D.X;
-										ptr[3*x] = 255;
-										ptr[3*x+1] = 0;
-										ptr[3*x+2] = 0;
-									}	
-								}
-							}
-							
-							//drawPersonPointsCov_debug(prs->meanMoA2, prs->covMoA2, activityMap, Scalar::all(0));
-
-							imshow("apperance Model", prs->apperance);
-						
-							//whiteBackApp.copyTo(prs->apperance);
-							for (int i = 0; i < MODEL_NBINS; i++)
-							{
-								prs->countApperance[i] = 0;
-							}
-						}
-					}
-					else
-						cout << "Error" << endl;
-				}
-
 				//generate tracks history
-			generateTrackHistory(tracks, trckPpl, ttl_trckPpl, frames);				
+				generateTrackHistory(tracks, trckPpl, ttl_trckPpl, frames);				
 
 				//For display purposes
 				if (debug >= DEBUG_MED)
@@ -454,8 +374,8 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					}
 				}
 				startTime_tmp = clock();
-				//displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
-				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
+				displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
+				//displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				//merged = displayMergeMeasurements(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, *tmp, debug, frames);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
@@ -493,7 +413,7 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 			resize(*outMoA, outMoAScaled, Size(outMoA->cols/DEPTH_SCALE, outMoA->rows/DEPTH_SCALE), 0,0, INTER_LINEAR);
 			outMoA = &outMoAScaled;
 		}
-		//imshow(windMoA, *outMoA);
+		imshow(windMoA, *outMoA);
 
 		if (debug >= DEBUG_HIGH)
 		{
@@ -512,51 +432,51 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 		//if (frames == 976)
 		//	waitTime = 0;
 
-		//int c = waitKey(waitTime);
+		int c = waitKey(waitTime);
 		
-		//switch (c)
-		//{
-		//case 32:
-		//	{
-		//		saved = true;;
-		//		break;
-		//	}
-		//case 27: //esc
-		//	{
-		//		bShouldStop = true;
-		//		break;
-		//	}
+		switch (c)
+		{
+		case 32:
+			{
+				saved = true;;
+				break;
+			}
+		case 27: //esc
+			{
+				bShouldStop = true;
+				break;
+			}
 
-		//case 99: //c
-		//	{
-		//		bgComplete = true;
-		//		break;
-		//	}
-		//case 116: //t
-		//	{
-		//		trans = !trans;
-		//		break;		
-		//	}
-		//case 100: //d
-		//	{
-		//		deleteBG = !deleteBG;
-		//	}
-		//case 13: //enter
-		//	{
-		//		//debugFrame = frames + 1;
-		//		//imwrite("c:/Dropbox/Phd/Individual Studies/Problems/MoA_Tilting.jpg", *outMoA);
-		//		//imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1.jpg", rgbImages[1]);
-		//		//waitTime = 1;
-		//		if (waitTime == 0)
-		//			waitTime=1;
-		//		else
-		//		//{
-		//		//	//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
-		//			waitTime=0;
-		//		//}
-		//		break;
-		//	}
-		//}
+		case 99: //c
+			{
+				bgComplete = true;
+				break;
+			}
+		case 116: //t
+			{
+				trans = !trans;
+				break;		
+			}
+		case 100: //d
+			{
+				deleteBG = !deleteBG;
+			}
+		case 13: //enter
+			{
+				//debugFrame = frames + 1;
+				//imwrite("c:/Dropbox/Phd/Individual Studies/Problems/MoA_Tilting.jpg", *outMoA);
+				//imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1.jpg", rgbImages[1]);
+				//waitTime = 1;
+				if (waitTime == 0)
+					waitTime=1;
+				else
+				//{
+				//	//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
+					waitTime=0;
+				//}
+				break;
+			}
+		}
 
 		//save current people
 		//for (int i = 0; i < ttl_dtctPpl; i++)
@@ -629,6 +549,12 @@ void PplTracker_v1::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 		outDebugFile << titles[i] << ": " << time_p << " %" << endl;
 	}
 	outDebugFile << endl;
+
+	double trackSecs = (double(totalIntervals[TRACK_ID])/(double(CLOCKS_PER_SEC)));
+	double tracksAvs = trackSecs/frames;
+	outDebugFile << "Total time tracking (secs): " << trackSecs << endl;
+	outDebugFile << "Avg time tracking (secs): " << tracksAvs << endl;
+
 	outDebugFile << "PARTIAL EXECUTION PEOPLE DETECTION" << endl;
 	for (int i = 0; i < TOTAL_SUBINTERVAL_DETECTION; i++)
 	{
