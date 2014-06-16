@@ -28,7 +28,7 @@ public:
 	void trackingMoA(int fromVideo, int recordOut, int tilt, int debug);
 
 private:
-	void writeTrackingResults(vector<TrackInfo>& tracks);
+	void writeTrackingResults(vector<AM::TrackInfo>& tracks);
 	void pointSelectionHeight_onMouse(int event, int x, int y, int flags, void* param);
 
 	XnPoint3D p;

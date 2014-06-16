@@ -18,15 +18,18 @@ using namespace cv;
 using namespace xn;
 using namespace PplDtcV1;
 
-class PplDetection_v1
+
+class PplDetection_v3
 {
 public:
-	PplDetection_v1(void);
-	~PplDetection_v1(void);
+	PplDetection_v3(void);
+	~PplDetection_v3(void);
 
 	void detection(int fromVideo, int recordOut, int tilt, int debug);
 
 private:
 	void writeTrackingResults(vector<PplDtcV1::TrackInfo>& tracks);
+
+
 };
 

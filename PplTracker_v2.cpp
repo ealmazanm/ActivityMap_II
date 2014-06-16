@@ -1,68 +1,20 @@
-#include "PplDetection_v1.h"
+#include "PplTracker_v2.h"
 #include <vld.h>
 
-
-PplDetection_v1::PplDetection_v1(void)
+//Meanshift tracker
+PplTracker_v2::PplTracker_v2(void)
 {
-	
+	kin = -1;
 }
 
 
-PplDetection_v1::~PplDetection_v1(void)
+PplTracker_v2::~PplTracker_v2(void)
 {
 }
 
-
- void pointSelectionBBoxRPS_onMouse(int event, int x, int y, int flags, void* param)
+void PplTracker_v2::writeTrackingResults(vector<TrackInfo>& tracks)
 {
-	if (event == CV_EVENT_FLAG_LBUTTON)
-	{
-		Mat* img = (Mat*)param;
-		if (x != -1 && y != -1)
-		{
-
-			int val = img->ptr<ushort>(y)[x];
-			
-			float range = (img->rows - y) * RANGE_STEP;
-
-			//outPProjRPS << range << " " << val << endl;
-			cout << "Range: " << range << "- > Proj at (" << x << ", " << y << "): " << val << endl;
-		}
-	}
-}
-
-
-int heightPS = 0;
-void pointSelectionHeight_onMouse(int event, int x, int y, int flags, void* param)
-{
-	if (event == CV_EVENT_FLAG_LBUTTON)
-	{
-		Mat* img = (Mat*)param;
-		if (x != -1 && y != -1)
-		{
-			if (heightPS == 0)
-				heightPS = y;
-			else
-			{
-				int ttl = y - heightPS;
-				heightPS = 0;
-				int p = y - (ttl/2);
-				float range = (img->rows-p)*RANGE_STEP; //binSize
-
-				//outPvariancePS << range << " " << ttl << endl;
-				cout << "Range: " << range << ". Variance" << ttl*RANGE_STEP << endl;
-
-			}
-
-
-		}
-	}
-}
-
-
-void PplDetection_v1::writeTrackingResults(vector<TrackInfo>& tracks)
-{
-	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Detections_ellipses_v1.txt");
+	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v2.txt");
 	//write on files the tracks for posterior evaluation
 	for (int i = 0; i < tracks.size(); i++)
 	{
@@ -82,9 +34,8 @@ void PplDetection_v1::writeTrackingResults(vector<TrackInfo>& tracks)
 }
 
 
-void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debug)
+void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debug)
 {
-
 	vector<TrackInfo> tracks;
 
 	bool saved = false;
@@ -96,7 +47,6 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 
 	//Initialize resolutions MoA and Remap Polar space
 	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
-
 
 	KinectSensor kinects[NUM_SENSORS];
 	const XnDepthPixel* depthMaps[NUM_SENSORS];
@@ -119,7 +69,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
-	Mat background = Mat(actMapCreator.getResolution(), CV_8UC1);
+	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
 	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
 
 	//flags
@@ -128,7 +78,6 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	bool bgComplete = true;
 	bool deleteBG = true;
 
-	Mat foreImages[NUM_SENSORS]; //for debugging for the foreground points
 	Mat depthImages[NUM_SENSORS];
 	Mat rgbImages[NUM_SENSORS];
 	Mat depthMat[NUM_SENSORS];
@@ -140,10 +89,11 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 
 	XnPoint3D* pointsFore2D [NUM_SENSORS];
 	XnPoint3D* points3D[NUM_SENSORS];
+	bool* activePoints[NUM_SENSORS];
+	Point* moa2DPoint[NUM_SENSORS];
 
 	for (int i = 0; i < NUM_SENSORS; i++)
 	{
-		foreImages[i] = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
 		depthImages[i] = Mat(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
 		rgbImages[i] = Mat(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
 		depthMat[i] = Mat(XN_VGA_Y_RES, XN_VGA_X_RES, CV_16U);
@@ -152,7 +102,6 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	}
 
 	bool first = true;
-
 
 	Mat polar = Mat(RANGE_ROWS,181, CV_16UC1);
 	Mat polarAlt= Mat(RANGE_ROWS,181, CV_16UC1);
@@ -172,17 +121,22 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	recordOut = 0;
 	if (recordOut == 1)
 	{
-		w.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\RemapPolarSpace_Detection.avi",CV_FOURCC('P','I','M','1'), 20.0, polarAlt_smooth_.size(), true);
-		w1.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\MoA_tracking_V1.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
+		w.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\RemapPolarSpace_Detection.avi",CV_FOURCC('P','I','M','1'), 20.0, polarAlt_smooth_.size(), true);
+		w1.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\MoA_tracking_V1.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	}	
 
 	//Size of kernel: smooth rps;
 	Mat kernel = Mat::ones(Size(5,27), CV_32F);
 
+	Person* trckPpl = new Person[MAX_PEOPLE];
+	int ttl_trckPpl = 0;
+	TermCriteria term = TermCriteria(TermCriteria::MAX_ITER+TermCriteria::EPS, 50, 0.1);
+
 	char* nWindows[NUM_SENSORS];
 	nWindows[0] =  "rgb 0";
 	nWindows[1] =  "rgb 1";
 	nWindows[2] =  "rgb 2";
+
 
 	char* windMoA = "Activity Map";
 	clock_t startTime = clock();
@@ -193,10 +147,10 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	int debugFrame = -1;
 
 	vector<PointMapping>* pntsMap2 = new vector<PointMapping>[polarAlt.rows*polarAlt.cols];
+	int tgtIdCounter = 0; 
 	while (!bShouldStop && frames < 1000)
 	{		
-		
-		printf("\rFrame %d", frames);
+		printf("\rFram %d", frames);
 
 		if (frames == 5) 
 			bgComplete = true;
@@ -243,9 +197,10 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		{
 			if (first)
 			{
-				whiteBack = Mat::zeros(actMapCreator.getResolution(), CV_8UC1) + 255;
-				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC1);
-				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC1);
+				whiteBack = Mat::Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				Utils::initMat3u(whiteBack, 255);
 				first = false;
 			}
 			whiteBack.copyTo(*activityMap);
@@ -254,15 +209,26 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 			{
 				startTime_tmp = clock(); //time debuggin
 				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
-				if (debug >= DEBUG_HIGH)//to show the foreground points on the image plane
-					foreImages[i] = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
-					updateForegroundImg(foreImages[i], pointsFore2D[i], numberOfForegroundPoints[i]);
 				totalIntervals[BSUB_ID] += clock() - startTime_tmp; //time debugging
 				nPoints += numberOfForegroundPoints[i];
+				if (debug >= DEBUG_HIGH)//Draw the output of the foreground detection
+				{
+					if (frames == -1 && i == 1)
+						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Orig.jpg", rgbImages[1]);
+					for (int c = 0; c < numberOfForegroundPoints[i]; c++)
+					{
+						XnPoint3D* p = &(pointsFore2D[i][c]); 
+						uchar* ptr = rgbImages[i].ptr<uchar>(p->Y);
+						ptr[3*(int)p->X] = 0;
+						ptr[(3*(int)p->X)+1] = 0;
+						ptr[(3*(int)p->X)+2] = 255;
+					}
+					if (frames == -1 && i == 1)
+						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Red.jpg", rgbImages[1]);
+				}
 			}
 			if (nPoints > 0)
 			{
-				Mat acMoA = Mat::zeros(activityMap->size(), CV_16U);
 				Person* dtctPpl = new Person[MAX_PEOPLE];
 				int ttl_dtctPpl = 0;
 
@@ -278,6 +244,8 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 				{
 					startTime_tmp = clock();
 					points3D[i] = new XnPoint3D[numberOfForegroundPoints[i]];
+					activePoints[i] = new bool[numberOfForegroundPoints[i]];
+					moa2DPoint[i] = new Point[numberOfForegroundPoints[i]];
 					kinects[i].arrayBackProject(pointsFore2D[i], points3D[i], numberOfForegroundPoints[i]);
 					totalIntervals[BACKPR_ID] += clock() - startTime_tmp; //time debugging
 
@@ -285,92 +253,211 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 					kinects[i].transformArray(points3D[i], numberOfForegroundPoints[i]);
 					totalIntervals[PTRANS_ID] += clock() - startTime_tmp; //time debugging
 
-					
-					
-					//Create alternative representation
-					startTime_tmp = clock();
-					updatePolarAlternateive(&polarAlt, &polar, pntsMap2, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], numberOfForegroundPoints[i], debug, i);	
-					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
-
 					if (debug >= DEBUG_NONE)
 					{
 						startTime_tmp = clock();
-						updateActivityMap(acMoA, points3D[i], numberOfForegroundPoints[i]);
+						updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
 						totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
-						if (i == 2)
-						{
-							Utils::convert16to8(&acMoA, *activityMap);
-							Utils::convert16to8(&acMoA, *activityMap_Back);
-
-							threshold(*activityMap, *activityMap, 254, 255, THRESH_BINARY);
-
-						}
 					}
+
+				}	
+
+				getMoA2DPoints(points3D, moa2DPoint, numberOfForegroundPoints);
+
+				//if (frames == 411)
+				//	waitTime = 0;
+
+				if (ttl_trckPpl > 0)
+				{
+					//sort list by range
+					Point2d origin= Point2d(activityMap->cols/2, activityMap->rows); //to compute range
+					sortByRange(trckPpl, ttl_trckPpl, origin);
+					//for debug
+					Mat MoACopy;
+					activityMap->copyTo(MoACopy);
+					for (int i = 0; i < ttl_trckPpl; i++)
+					{
+						Person* trgt = &(trckPpl[i]);
+						Mat MoAp = Mat::zeros(activityMap->size(), CV_32FC1);
 					
+						startTime_tmp = clock();
+						createMoAp(trgt, points3D, moa2DPoint, numberOfForegroundPoints, pointsFore2D, rgbMaps, MoAp, frames, activePoints);
+						totalIntervals[PROBMAP_ID] += clock() - startTime_tmp; //time debugging
+				
+						//DEBUG: Shows the actual performance of camshift
+						if (debug >= DEBUG_HIGH && frames > 200)//( (frames >= 300 && trgt->id == 6) || (frames >= 300 && trgt->id == 8) ) )
+						{
+							Mat mImg = Mat::zeros(activityMap->size(), CV_8UC1);
+							Utils::convert16to8(&MoAp, mImg);
+							Rect r = getUncertainArea(trgt->rrMoA.boundingRect(), MoAp.size(), 0.25);
+						
+								outDebugFile << "**********Target " << i << ". Frame: " << frames << endl;
+								float maxProb, ttlProb;
+								maxProb = ttlProb = 0;
+								getProbs(maxProb, ttlProb, MoAp, r);
+								outDebugFile << "TtlProb: " << ttlProb << ". MaxProb: " << maxProb << endl;
+						
+							//rectangle(*activityMap, r, Scalar::all(0), 2);
+							rectangle(mImg, r, Scalar::all(0), 2);
+							imshow("Img", mImg);
+							//imshow("...", *activityMap);
+							waitKey(0);
+							camShift_custom(trgt, MoAp, term);
+							rectangle(mImg, trgt->rrMoA.boundingRect(), Scalar::all(0), 2);
+							imshow("Img", mImg);
+							waitKey(0);
+						}
+						//else
+						{
+							startTime_tmp = clock();
+							camShift_custom(trgt, MoAp, term);
+							totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
+						}
+						if (frames%25 == 0 && trgt->lost == 0)
+						{
+							//if (frames == 330 && trgt->id == 7)
+							//	cout << "Stop" << endl;
+							startTime_tmp = clock();
+							//Build appearance model for the associated detection
+							updateAppearanceDtct(trgt, points3D, moa2DPoint, numberOfForegroundPoints, pointsFore2D, rgbMaps, frames, debug);
+							copyModel(trgt);
+							//updateMShiftModel(trgt);
+							totalIntervals[UPDATE_APP] += clock() - startTime_tmp; //time debugging
+
+							if (debug > DEBUG_MED && frames == 200)
+							{
+								outDebugFile << "Target after update" << endl;
+								int j = 1;
+								outDebugFile << "At frame: " << frames << ". Bin: " << j; 
+									Scalar cMean = trgt->colourModel[j].mean;
+									outDebugFile << ". Error: Height Prob: " << trgt->heightModelPdf[j] << " Colour Mean: (" << cMean.val[0] << ", " << cMean.val[1] << ", " << cMean.val[2] << "). " << endl;
+									printValuesF(&trgt->colourModel[j].cov , "Colour Cov", outDebugFile);
+							}
+
+							//updateMShiftModel(trgt);
+						}
+						//show MoaCopy
+						if (debug >= DEBUG_NONE && frames > 319)
+						{
+							displayTrackersMoA(trgt, 1, MoACopy, debug, frames);
+							imshow("MoACopy", MoACopy);
+							waitKey(0);
+						}
+						//Clean points with high probability of belonging to the target.
+						//TODO: Get a sense of typical probability values (0 - 3e^-6)
+						startTime_tmp = clock();
+						cleanPointsTarget(trgt, moa2DPoint, activePoints, numberOfForegroundPoints, activityMap->size(), MoAp, MoACopy, debug); //Take out of debug after
+						totalIntervals[CLEAN_ID] += clock() - startTime_tmp; //time debugging
+
+						if (debug >= DEBUG_NONE && frames > 319)
+						{
+							imshow("MoACopy", MoACopy);
+							waitKey(0);
+						}
+
+
+					}
 				}
-		
-				//Todo: Create a method detection(polarAlt, moAPeople)
+				
+				//int w = 1;
+				//if (frames > 241)
+				//	w = 0;
+				//if (debug >= DEBUG_NONE && ttl_trckPpl > 0)
+				//{
+				//	/*Mat mImg = Mat::zeros(activityMap->size(), CV_8UC1) + 255;
+				//	showActivePoints(mImg, moa2DPoint, activePoints, numberOfForegroundPoints, debug);
+				//	for (int i = 0; i < ttl_trckPpl; i++)
+				//		rectangle(mImg, trckPpl[i].rrMoA.boundingRect(), Scalar::all(0), 2);
+				//	imshow("moat", mImg);
+				//	waitKey(w);
+
+				//	if (frames == 242)
+				//		cout << "Stop" << endl;*/
+
+				//	removeLostTracks(trckPpl, ttl_trckPpl);
+				//	cleanPoints(trckPpl, ttl_trckPpl, moa2DPoint, activePoints, numberOfForegroundPoints, activityMap->size()); //Take out of debug after
+
+				//	/*showActivePoints(mImg, moa2DPoint, activePoints, numberOfForegroundPoints, debug);
+				//	imshow("moat", mImg);
+				//	waitKey(w);*/
+				//}
+
+				startTime_tmp = clock();
+				removeLostTracks(trckPpl, ttl_trckPpl);
+				totalIntervals[REMOVE_ID] += clock() - startTime_tmp; //time debugging
+				//startTime_tmp = clock();
+				//cleanPoints(trckPpl, ttl_trckPpl, moa2DPoint, activePoints, numberOfForegroundPoints, activityMap->size()); //Take out of debug after
+				//totalIntervals[CLEAN_ID] += clock() - startTime_tmp; //time debugging
+				
+				
+
+				//Search for new peiple
+				for (int i = 0; i < NUM_SENSORS; i++)
+				{
+					//Create alternative representation
+					startTime_tmp = clock();
+					updatePolarAlternateive(&polarAlt, &polar, pntsMap2, ttlPnts, points3D[i], pointsFore2D[i], rgbMaps[i], activePoints[i], numberOfForegroundPoints[i], debug, i);	
+					totalIntervals[RPSPACE_ID] += clock() - startTime_tmp; //time debugging
+				}
+	
 				startTime_tmp = clock();
 				cv::filter2D(polarAlt, polarAlt_smooth, -1, kernel);
 				totalIntervals[SMOOTH_ID] += clock() - startTime_tmp; //time debugging
 
-				
 				startTime_tmp = clock();
-				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame, true); //Connected component detection
+				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
 
-				if (debug >= DEBUG_HIGH)
-				{
-					for (int i = 0; i < ttl_dtctPpl; i++)
-					{
-						Person p = dtctPpl[i];
-						int val = polarAlt_smooth.ptr<ushort>(p.mean_RPS.y)[(int)p.mean_RPS.x];
-						float range = (polarAlt.rows-p.mean_RPS.y)*RANGE_STEP;
-						//outPProjRPS << range << " " << val << endl;
-					}
-				}
-		
-				
+				if (ttl_dtctPpl > 0)
+					addNewTracks(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, tgtIdCounter);
+	
 				//generate tracks history
-				generateTrackHistory(tracks, dtctPpl, ttl_dtctPpl, frames);				
+				if (ttl_trckPpl > 0)
+					generateTrackHistory(tracks, trckPpl, ttl_trckPpl, frames);				
 
 				//For display purposes
-				if (debug >= DEBUG_NONE)
+				if (debug >= DEBUG_MED)
 				{
-					normalizeRPS(&polarAlt_smooth, polarAlt_smooth_);
-					//Utils::convert16to8(&polarAlt_smooth, polarAlt_smooth_);
-					namedWindow("RPS_Smooth",0);
+					Utils::convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 					Utils::convert16to8(&polarAlt, polarAlt_);
 					Utils::convert16to8(&polar, polar_);
-					threshold(polar_, polar_, 254, 255, THRESH_BINARY);
-					threshold(polarAlt_, polarAlt_, 254, 255, THRESH_BINARY);
-										
-					namedWindow("Polar", 0);
-					cvSetMouseCallback("Polar", pointSelectionHeight_onMouse, &polar_);
-					//pointSelectionBBox_onMouse
-					//displayTrackersRPS(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, debug);
-					imshow("Polar", polar_);
-					imshow("RPS_Smooth", polarAlt_smooth_);
+					displayTrackersRPS(trckPpl, ttl_trckPpl, polarAlt_smooth_, debug);
+					imshow("Polar Alt", polar_);
+					imshow("Polar Alt Smooth_", polarAlt_smooth_);
 					imshow("Polar Alt", polarAlt_);
-
-					cvSetMouseCallback("RPS_Smooth", pointSelectionBBoxRPS_onMouse, &polarAlt_smooth);
-					
-
 				}
 				Mat *tmp = activityMap;
 				if (!deleteBG)
 					tmp = activityMap_Back;
-							
+				
 				startTime_tmp = clock();
+				displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
 				//displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
-				
+
+
+				if (debug >= DEBUG_HIGH  && ttl_trckPpl > 0)
+				{
+					Person* trgt = &(trckPpl[0]);
+					if (frames % 2 == 0)
+					{
+						updateAppearanceImg(trgt);
+						updateAppearanceImgDtc(trgt);
+						imshow("D", trgt->apperanceRedDtc);
+					}
+					
+					imshow("AppearanceMdl", trgt->apperanceRed);
+					//imshow("A2", trgt->apperance);
+				}
 
 				delete [] dtctPpl;
 				ttl_dtctPpl = 0;
 				for (int i = 0; i < NUM_SENSORS; i++)
+				{
 					delete []points3D[i];
-
+					delete []activePoints[i];
+					delete []moa2DPoint[i];
+				}
 			}
 			outMoA = activityMap;
 			if (!deleteBG)
@@ -389,6 +476,8 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 			totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
 			
 			outMoA = &background;
+			//if (recordOut == 1 && trans)
+			//		w << background;
 		}
 
 		if (DEPTH_SCALE < 1)
@@ -400,36 +489,17 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 
 		if (debug >= DEBUG_HIGH)
 		{
+			//imshow("Polar Alt", polar_);
+			//imshow("Polar Alt Smooth_", polarAlt_smooth_);
+			//imshow("Polar Alt", polarAlt_);
 			imshow(nWindows[0], rgbImages[0]);
 			imshow(nWindows[1], rgbImages[1]);
 			imshow(nWindows[2], rgbImages[2]);
 		}
-	
-		//if (frames == 230)
-		//	waitTime = 0;
+
 		int c = waitKey(waitTime);
 		if (c == 13)
-		{
 			waitTime = !waitTime;
-
-			//Foreground points in the image plane
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore0.jpg", foreImages[0]);
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore1.jpg", foreImages[1]);
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore2.jpg", foreImages[2]);
-
-			////Map of activity
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/MoA.jpg", *outMoA);
-
-			////Polar space vs RPS
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/Polar.jpg", polar_);
-			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS.jpg", polarAlt_);
-
-			//RPS vs RPS smoothed
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS_smpooth.jpg", polarAlt_smooth_);
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS.jpg", polarAlt_);
-			
-
-		}
 		else if (c == 27)
 			bShouldStop = true;
 
@@ -439,14 +509,16 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	delete []pntsMap2;
 
 	for (int i = 0; i < NUM_SENSORS; i++)
+	{
 		delete []pointsFore2D[i];
-
+	}
 
 	delete activityMap;
 	delete activityMap_Back;
 
 	writeTrackingResults(tracks);
 
+	delete[] trckPpl;
 
 	totalIntervals[TOT_ID] = clock() - startTotalTime;
 	//BUILD REPORT
@@ -469,6 +541,15 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		float timpe_p = totalSubIntervalsDetection[i]*100/totalIntervals[DET_ID];
 		outDebugFile << titles_subDet[i] << ": " << timpe_p << " %" << endl;
 	}
+
+	outDebugFile << "PARTIAL EXECUTION CREATE PROBABILITY MAP" << endl;
+	for (int i = 0; i < TOTAL_SUBINTERVAL_PROB; i++)
+	{
+		float timpe_p = totalSubIntervalsProb[i]*100/totalIntervals[PROBMAP_ID];
+		outDebugFile << titles_subProb[i] << ": " << timpe_p << " %" << endl;
+	}
+
+	
 
 //	outDebugFile << endl;
 	//outDebugFile << "PARTIAL pARTIAL EXECUTION BUILD APPERANCE MODEL" << endl;
@@ -496,7 +577,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 
 	double fps = frames/(double(totalIntervals[TOT_ID])/(double(CLOCKS_PER_SEC)));
 	outDebugFile << "Total frames processed: " << frames << ". fps: " << fps << endl;
-	
+
 	for (int i = 0; i < NUM_SENSORS; i++)
 	{
 		kinects[i].stopDevice();

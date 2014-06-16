@@ -1,7 +1,9 @@
 #pragma once
 #include "PplDetection_v1.h"
+#include "PplDetection_v2.h"
 #include "PplTracker_v1.h"
 #include "PplTracker_v14.h"
+#include "PplTracker_v2.h"
 #include "MergeMeasurement_GT.h"
 #include "visualizeGT.h"
 #include <vld.h>
@@ -43,7 +45,10 @@ int main(int argc, char* argv[])
 	else if (debug == AM::DEBUG_HIGH)
 		cout << ". Debug high" << endl;
 
-	//PplDetection_v1 pplDetc;
+	srand(time(NULL));
+
+	//PplDetection_v1 pplDetc; //RPS
+	//PplDetection_v2 pplDetc; //MOA
 	//pplDetc.detection(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
@@ -51,8 +56,13 @@ int main(int argc, char* argv[])
 	//pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
 	//VLDReportLeaks();
 
-	PplTracker_v14 pplTrack14;
-	pplTrack14.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//PplTracker_v14 pplTrack14;
+	//pplTrack14.trackingMoA(fromVideo, recordOut, tilt, debug);
+
+	//VLDEnable();
+	PplTracker_v2 pplTrack2;
+	pplTrack2.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//VLDReportLeaks();
 
 	//To ground truth merge measurements
 	 //MergeMeasurement_GT mmGt;

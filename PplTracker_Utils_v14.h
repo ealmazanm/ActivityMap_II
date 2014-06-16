@@ -9,12 +9,13 @@ namespace AMv14
 {
 	//TRACKING SETUP
 		static const int DA_TYPE_NN = 0;
-		static const int DA_TYPE_GNN = 1;
-		static const int DA_TYPE = DA_TYPE_GNN;
+		static const int DA_TYPE_SNN = 1;
+		static const int DA_TYPE_GNN = 2;
+		static const int DA_TYPE = DA_TYPE_SNN;
 
 		static const int DA_FEAT_SPATIAL = 0;
 		static const int DA_FEAT_APPEARANCE = 1;
-		static const int DA_FEATURE = DA_FEAT_APPEARANCE;
+		static const int DA_FEATURE = DA_FEAT_SPATIAL;
 
 		static const float UPDATE_RATE = 0;
 
@@ -98,7 +99,8 @@ namespace AMv14
 		static const int MODEL_BINRANGE = 250;
 		static const int MODEL_NBINS = (MODEL_MAX_HEIGHT-MODEL_MIN_HEIGHT)/MODEL_BINRANGE;
 		//static const int MODEL_NBINS = (ActivityMap_Utils::CEILING_THRESHOLD-ActivityMap_Utils::FLOOR_THRESHOLD)/MODEL_BINRANGE;
-		static const int MAX_PEOPLE = 60;
+		static const int MAX_PEOPLE = 100;
+		static const int MIN_NUM_POINTS_BIN = 50;
 
 		static float meas_std = 1;
 		static float proc_std = 30;
@@ -120,6 +122,7 @@ namespace AMv14
 		{
 			int id;
 			Mat stateMoA;
+			Mat predStateMoA;
 			Mat stateUncertainty;
 			Mat covMoA_points;
 			Mat innUncertainty;
@@ -141,10 +144,13 @@ namespace AMv14
 			Scalar colour;
 
 			//debug
+			Mat bwImg; //to show the output of the people detection
 			float maxHeight;
 			float minHeight;
 			int idDetection;
 			Mat apperance;
+			Mat apperanceRed;
+			Mat apperanceRed_Dtc;
 			int countApperance[MODEL_NBINS];
 
 			//debugging
@@ -213,7 +219,7 @@ namespace AMv14
 		static const int DTC_FULL = 0;
 		static const int DTC_MERGE = 1;
 		static const int DTC_SPLIT = 2;
-		static const int TRACKLOST_THRESHOLD = 5;
+		static const int TRACKLOST_THRESHOLD = 8;
 		static const int EUCLIDEAN_THRESHOLD = 150;
 		//Update linear model
 		static float valsH[] = {1, 0, 0, 0, 0, 1, 0, 0};
@@ -244,6 +250,9 @@ namespace AMv14
 	//Output files
 		static ofstream outDebugFile("d:/Debug.txt");
 		static ofstream fpsOut("c:\\Dropbox\\PhD\\Matlab\\FrameRate\\fps_BGUpdt.txt");
+		static ofstream modelOut("c:\\Dropbox\\PhD\\Matlab\\Model\\targetModles.txt");
+		static ofstream simOut;//("c:\\Dropbox\\PhD\\Matlab\\Model\\Appearance\\GNN\\WRONG\\similarityMx.txt");
+		static ofstream chromOut("c:\\Dropbox\\PhD\\Matlab\\Model\\Appearance\\chromogram.txt");
 		static ofstream outPerson("c:\\Dropbox\\PhD\\Matlab\\PdF_person\\pdf_points.txt");
 		static ofstream outHeights("c:\\Dropbox\\PhD\\Matlab\\Height_People\\heights.txt");
 		static ofstream outPersModel ("c:\\Dropbox\\PhD\\Matlab\\Model\\modelInfo.txt");
@@ -395,6 +404,8 @@ namespace AMv14
 
 				if (p2D.x != -1)
 				{
+					if (p2D.y >= 480)
+						p2D.y = 479;
 					uchar* ptr = activityMap.ptr<uchar>(p2D.y);
 					uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
 
@@ -655,7 +666,7 @@ namespace AMv14
 			p->innUncertainty = Mat::zeros(2,2, CV_32F);
 	
 
-			
+			p->bwImg = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
 
 
 			p->control = DTC_FULL;
@@ -663,12 +674,15 @@ namespace AMv14
 			p->associated = false;
 
 			//Image for debuggin to show the apperance model
+			p->apperanceRed = Mat::zeros(400, 50, CV_8UC3);
 			p->apperance = Mat(400,370, CV_8UC3);
 			Utils::initMat3u(p->apperance, 255);
+			Utils::initMat3u(p->apperanceRed, 255);
 			for (int i = 1; i < MODEL_NBINS; i++)
 			{
 				int row =  i*50;
 				line(p->apperance, Point(0, row), Point(370, row), Scalar::all(0));
+				line(p->apperanceRed, Point(0, row), Point(50, row), Scalar::all(0));
 			}
 			line(p->apperance, Point(50,0), Point(50, 400), Scalar::all(0));
 			for (int i = 0; i < MODEL_NBINS; i++)
@@ -938,6 +952,8 @@ namespace AMv14
 				{
 					PointMapping* pMap = &((*pnts)[j]);
 					
+					
+					
 					//PointMapping* pMap = &((*pnts)[j]);
 					//(*pnts)[j].idPerson = prs->idDetection;
 					pMap->idPerson = prs->idDetection;
@@ -955,6 +971,15 @@ namespace AMv14
 					//If the point is whithin the height range of a person
 					if (height < MODEL_MAX_HEIGHT && height > MODEL_MIN_HEIGHT)
 					{
+						if (debug >= DEBUG_HIGH) //TO STORE THE XYZ RGB OF THE POINTS FROM A PARTICULAR TARGET AT A PARTICULAR FRAME
+						{
+							if (frames == 488 && prs->idDetection == 4)
+							{
+								chromOut << pMap->p3D->X << " " << pMap->p3D->Y << " " << pMap->p3D->Z << " "
+									<< (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
+							}
+						}
+
 						int bin = (MODEL_MAX_HEIGHT - height)/MODEL_BINRANGE;						
 						if (debug > DEBUG_NONE)
 						{
@@ -992,6 +1017,14 @@ namespace AMv14
 						if (debug >= DEBUG_MED && frames == 96 && prs->id == 1)
 						{
 							outPersModel << height << " " << (int)colour->nRed << " " << (int)colour->nGreen << " " << (int)colour->nBlue << endl;
+						}
+
+						if(debug >= DEBUG_HIGH)
+						{
+							uchar* ptrBWImg = prs->bwImg.ptr<uchar>(pMap->p2D.Y);
+							ptrBWImg[3*(int)pMap->p2D.X] = 255;
+							ptrBWImg[3*(int)pMap->p2D.X+1] = 255;
+							ptrBWImg[3*(int)pMap->p2D.X+2] = 255;
 						}
 					}
 					else
@@ -1031,11 +1064,12 @@ namespace AMv14
 						for (int y = 0; y < 50; y++)
 						{
 							uchar* ptr = prs->apperance.ptr<uchar>(y+step);
+							uchar* ptrRed = prs->apperanceRed.ptr<uchar>(y+step);
 							for (int x = 0; x < 50; x++)
 							{
-								ptr[x*3] = blue;
-								ptr[x*3+1] = green;
-								ptr[x*3+2] = red;
+								ptrRed[x*3] = ptr[x*3] = blue;
+								ptrRed[x*3+1] = ptr[x*3+1] = green;
+								ptrRed[x*3+2] = ptr[x*3+2] = red;
 							}
 						}
 					}
@@ -1555,7 +1589,7 @@ namespace AMv14
 			if (!upperQuadrant)
 				angle = -angle;
 
-			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness);	
+			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness, CV_AA);	
 			if (txt != NULL)
 				putText(*moa, txt, Point(pntMean.x + bigAxis, pntMean.y), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, Scalar(0,0,255));
 		}
@@ -1666,7 +1700,10 @@ namespace AMv14
 
 				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
 
-				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, Scalar::all(0), 1, NULL);
+				char txt[15];
+				itoa(p->id, txt, 10);
+				
+				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, Scalar::all(0), 1, txt);
 
 				//Display the mapping of the rps points along with the ellipse of the distribution
 				if (debug >= DEBUG_MED)
@@ -1695,15 +1732,15 @@ namespace AMv14
 			}
 		}
 
-		static void displayTrackersMoA(Person* trckPpl, int ttl_trckPpl, Mat& moa, int debug, int frames)
+		static void displayPredictionsTrackersMoA(Person* trckPpl, int ttl_trckPpl, Mat& moa, int debug, int frames)
 		{
 			for (int iter = 0; iter < ttl_trckPpl; iter++)
 			{
 				const Person* p = &(trckPpl[iter]);
 
-				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
-				//cv::circle(moa, meanMoA, 2, Scalar(255,0,0));
-
+				Mat meanMoAMx = H*p->predStateMoA;
+				Point meanMoA = Point(meanMoAMx.at<float>(0), meanMoAMx.at<float>(1));
+				
 				Scalar color = Scalar(255,0,0); //occluded blob
 				if (p->lost > 0)
 					color = Scalar(0,0,0);
@@ -1714,11 +1751,67 @@ namespace AMv14
 					color = Scalar(0,0,255);
 
 				//Tracking ellipse
+				char* lbl = "T_";
+				char  lblFnal[15];
+				strcpy(lblFnal, lbl);
+				char txt[15];
+				itoa(p->id, txt, 10);
+				strcat(lblFnal, txt);
+					
+				//phisical extent
+				//drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2, lblFnal);
+				//uncertainty
+				drawPersonPointsCov_debug(meanMoA, p->innUncertainty, &moa, color, 2, txt);
+					
+				if (debug >= DEBUG_MED)
+				{
+					//drawPersonPointsCov_debug(p->meanMoA2, p->covMoA2, &moa, Scalar::all(0));
+					//Display the mapping of the rps points along with the ellipse of the distribution
+					int ttl = p->moAPoints.size();
+					for (int i = 0; i < ttl; i++)
+					{
+						Point pnt = p->moAPoints[i];
+						uchar* ptr = moa.ptr<uchar>(pnt.y);
+						ptr[3*pnt.x] = color.val[0];
+						ptr[3*pnt.x+1] = color.val[1];
+						ptr[3*pnt.x+2] = color.val[2];
+					}
+				}
+			}
+		}
+
+		static void displayTrackersMoA(Person* trckPpl, int ttl_trckPpl, Mat& moa, int debug, int frames)
+		{
+			for (int iter = 0; iter < ttl_trckPpl; iter++)
+			{
+				const Person* p = &(trckPpl[iter]);
+
+				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
+				//cv::circle(moa, meanMoA, 2, Scalar(255,0,0));
+
+				int thickness;
+				Scalar color = p->colour;
+				//if (p->lost > 0)
+				//	color = Scalar(0,0,0);
+				
+				if (p->control != DTC_MERGE)
+				{
+					thickness = 2;
+				}
+				else
+				{
+					thickness = 3; // merge
+				}
+
+				if (p->lost > 0)
+					thickness = 1;
+
+				//Tracking ellipse
 				char txt[15];
 				itoa(p->id, txt, 10);
 					
 				//phisical extent
-				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, 2, txt);
+				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, color, thickness, txt);
 				//uncertainty
 				//drawPersonPointsCov_debug(meanMoA, p->innUncertainty, &moa, color, 2, txt);
 					
@@ -1784,9 +1877,11 @@ namespace AMv14
 
 			p->stateMoA = p->A * p->stateMoA;
 
+			p->stateMoA.copyTo(p->predStateMoA);
+
 			//CovMoA is the covariance projected from the detection
 			p->stateUncertainty = p->Q + p->A * p->stateUncertainty * p->A.t();
-			if (p->lost > 0) //reduced the uncertainty because it was not reduced during the upate process
+			if (p->lost > 0 || (p->control == DTC_MERGE && UPDATE_RATE == 0)) //reduced the uncertainty because it was not reduced during the upate process
 			{
 				p->stateUncertainty *= 0.5;
 				//printValuesF(&p->stateUncertainty, "Uncertainty", outDebugFile);
@@ -2165,6 +2260,9 @@ namespace AMv14
 					clrMdlTrgt->mean = s;
 				}
 			}
+			
+			msr->apperanceRed.copyTo(target->apperanceRed_Dtc);
+			msr->bwImg.copyTo(target->bwImg);
 
 		}
 
@@ -2259,6 +2357,7 @@ namespace AMv14
 					int blue = rand() % 255 + 1;
 					dtc->colour = Scalar(red,green, blue);
 					dtc->id = pplId_cont++;
+					dtc->stateMoA.copyTo(dtc->predStateMoA);
 					out[cont++] = *dtc;
 				}
 			}
@@ -2568,6 +2667,90 @@ namespace AMv14
 			return costMt;
 		}
 
+
+		static Mat subOptNNAssociation(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat& costMt)
+		{
+			Mat assocMt = Mat::zeros(ttl_trckPpl, ttl_dtctPpl, CV_8UC1);
+
+			for (int h = 0; h < ttl_trckPpl; h++)
+			{
+				int pClosest = -1;
+				int tClosest = -1;
+				float maxSim = 0;
+				for (int i = 0; i < ttl_trckPpl; i++)
+				{
+					Person* t = &(trckPpl[i]);
+					if (!t->associated)
+					{
+						float* ptrC = costMt.ptr<float>(i);
+						uchar* ptrA = assocMt.ptr<uchar>(i);
+					
+						for (int j = 0; j < ttl_dtctPpl; j++)
+						{
+							Person* p = &(dtctPpl[j]);
+							if (!p->associated || (p->associated && p->control == DTC_MERGE))
+							{
+								float sim = ptrC[j];
+								if (sim > maxSim)
+								{
+									maxSim = sim;
+									pClosest = j;
+									tClosest = i;
+								}
+							}
+						}
+					}
+				}
+				if (pClosest != -1)
+				{
+						dtctPpl[pClosest].associated = true;
+						trckPpl[tClosest].associated = true;
+						assocMt.at<uchar>(tClosest, pClosest) = 1;
+				}
+			}
+			return assocMt;
+		}
+
+
+		static Mat randomAssociation(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat& costMt)
+		{
+			Mat assocMt = Mat::zeros(ttl_trckPpl, ttl_dtctPpl, CV_8UC1);
+
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				float* ptrC = costMt.ptr<float>(i);
+				uchar* ptrA = assocMt.ptr<uchar>(i);
+
+				int pClosest = -1;
+				float maxSim = 0;
+
+				vector<int> candidates;
+
+				for (int j = 0; j < ttl_dtctPpl; j++)
+				{
+					Person* p = &(dtctPpl[j]);
+					if (!p->associated || (p->associated && p->control == DTC_MERGE))
+					{
+						float sim = ptrC[j];
+						if (sim > maxSim)
+							candidates.push_back(j);
+
+					}
+				}
+				
+				if (!candidates.empty())
+				{
+					int v1 = rand()%candidates.size();
+					int d = candidates[v1];
+					assocMt.at<uchar>(i, d) = 1;
+					dtctPpl[d].associated = true;
+				}
+
+			}
+			return assocMt;
+
+		}
+
 		static Mat greedyAssociation(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat& costMt)
 		{
 			Mat assocMt = Mat::zeros(ttl_trckPpl, ttl_dtctPpl, CV_8UC1);
@@ -2767,12 +2950,36 @@ namespace AMv14
 				costMatrix = buildCostMatrix_Spatial(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl);
 			else
 				costMatrix = buildCostMatrix_Appearance(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, debug, frames);
+
+			if (debug >= DEBUG_HIGH)
+			{
+				if(frames > 778 && frames < 788)
+				{
+					simOut << "Frame: " << frames << endl;
+					for (int i = 0; i < ttl_trckPpl; i++)
+					{
+						const Person* t = &trckPpl[i];
+						float* ptr = costMatrix.ptr<float>(i);
+						for (int j = 0; j < ttl_dtctPpl; j++)
+						{
+							float s = ptr[j];
+							const Person* d = &dtctPpl[j];
+							simOut << "TargetID " << t->id <<", MesID " << d->id << ": " << s << endl;
+						}
+					}
+				}
+			}
 			
 			//association
 			if (DA_TYPE == DA_TYPE_NN)
 			{
 			//greedy association
 				return greedyAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
+			}
+			else if (DA_TYPE == DA_TYPE_SNN)
+			{
+				//suboptimal nearest neighbour
+				return subOptNNAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
 			}
 			else if (DA_TYPE == DA_TYPE_GNN)
 			{
@@ -2785,8 +2992,9 @@ namespace AMv14
 			}
 			else
 			{
-				cout <<"Not implemented yet" << endl;
-				return greedyAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
+				//Random association
+				return randomAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
+				//return greedyAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, costMatrix);
 			}
 
 		}
@@ -2830,9 +3038,52 @@ namespace AMv14
 			}
 		}
 
+		
+		static void updateAppearanceImg(Person* trgt)
+		{
+			for (int j = 0; j < MODEL_NBINS; j++)
+			{
+				int numBinPnts = trgt->heightModel[j];
+				
+				gaussianParam* mbc = trgt->colourModel + j;
+					
+				//fill the mean colour in the apperance image
+				int red, green, blue;
+				if (numBinPnts > MIN_NUM_POINTS_BIN)
+				{
+					red = mbc->mean.val[0];
+					green = mbc->mean.val[1];
+					blue = mbc->mean.val[2];
+				}
+				else
+					red = green = blue = 255;
+
+				int step = j*50;
+				for (int y = 0; y < 50; y++)
+				{
+						uchar* ptrRed = trgt->apperanceRed.ptr<uchar>(y+step);
+						for (int x = 0; x < 50; x++)
+						{
+							ptrRed[x*3] = blue;
+							ptrRed[x*3+1] = green;
+							ptrRed[x*3+2] = red;
+						}
+					}
+				
+				
+
+			}
+		}
+
 		//Data association (global optimal) Hungarian algorithm
 		static void tracking_GNN(Person*& trckPpl, int& ttl_trckPpl, Person*& dtctPpl, int& ttl_dtctPpl, Mat* moa, vector<DCF>& DCFs, int debug, int frames, ofstream& outDtcAreas)
 		{
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				trckPpl[i].associated = false;
+				updateAppearanceImg(&trckPpl[i]);
+			}
+
 			if (ttl_trckPpl > 0)
 			{
 				//Prediction
@@ -2844,6 +3095,29 @@ namespace AMv14
 
 				//Data association			
 				Mat associationMat = dataAssociation(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, mergesId, nAssoc, debug, frames);
+
+				if (debug >= DEBUG_HIGH) //display the final associations
+				{
+					if(frames > 778 && frames < 788)
+					{
+						simOut << "Associations: " << endl;
+						for (int i = 0; i < ttl_trckPpl; i++)
+						{
+							const Person* t = &trckPpl[i];
+							uchar* ptr = associationMat.ptr<uchar>(i);
+							for (int j = 0; j < ttl_dtctPpl; j++)
+							{
+								int s = ptr[j];
+								if (s == 1)
+								{
+									const Person* d = &dtctPpl[j];
+									simOut << "TargetID " << t->id <<", MesID " << d->id << ": " << s << endl;
+								}
+							}
+						}
+					}
+				}
+
 
 				//Udpate
 				KF_Updates(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, associationMat, debug, frames);

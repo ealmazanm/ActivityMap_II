@@ -39,7 +39,10 @@ void PplTracker_v14::pointSelectionHeight_onMouse(int event, int x, int y, int f
 
 void PplTracker_v14::writeTrackingResults(vector<TrackInfo>& tracks)
 {
-	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v14.txt");
+	//ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v14.txt");
+	ofstream outGt ("c:\\Dropbox\\PhD\\Matlab\\TrackingEval\\KingstonEvalTool\\TBE_Ellipse\\ST_V.1.4\\Results\\Spatial\\Update0\\Tracks_ellipses_SNN_spatial.txt");
+	//ofstream outGt ("c:\\Dropbox\\PhD\\Matlab\\TrackingEval\\KingstonEvalTool\\TBE_Ellipse\\ST_V.1.4\\Results\\Tracks_ellipses_Random.txt");
+	
 	//write on files the tracks for posterior evaluation
 	for (int i = 0; i < tracks.size(); i++)
 	{
@@ -62,7 +65,7 @@ void PplTracker_v14::writeTrackingResults(vector<TrackInfo>& tracks)
 void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int debug)
 {
 
-	ofstream outDtcAreas ( "c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\Dset1\\AreaProxResults\\mergeMeasurementsST_115.txt");
+	ofstream outDtcAreas; //( "c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\Dset1\\AreaProxResults\\mergeMeasurementsST_115.txt");
 
 	vector<TrackInfo> tracks;
 
@@ -91,6 +94,8 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 		kinects[i].startDevice();
 		kinects[i].tilt(tilt);
 	}
+
+
 
 
 	KINECTS_DISPLACEMENT = max(abs(kinects[0].translation(0)), abs(kinects[2].translation(0))); //MAXIMUM TRANSLATION IN THE HORIZONTAL AXIS
@@ -154,6 +159,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 
 	
 	VideoWriter w, w1;
+	//w1.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\MoA_tracking_V14_SNN_APP.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	recordOut = 0;
 	if (recordOut == 1)
 	{
@@ -201,7 +207,9 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 	bool merged = false;
 	while (!bShouldStop && frames < 1000)
 	{		
-		
+		if (frames == 30)
+			cout << "stop" << endl;
+
 		printf("\rFram %d", frames);
 
 		if (frames == 5) 
@@ -274,6 +282,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 						ptr[3*(int)p->X] = 0;
 						ptr[(3*(int)p->X)+1] = 0;
 						ptr[(3*(int)p->X)+2] = 255;
+
 					}
 					if (frames == -1 && i == 1)
 						imwrite("c:/Dropbox/Phd/Matlab/Model/rgb_1_Red.jpg", rgbImages[1]);
@@ -327,7 +336,8 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 				startTime_tmp = clock();
 				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
-		
+
+
 				startTime_tmp = clock();
 				tracking_GNN(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, activityMap, DCFs, debug, frames, outDtcAreas);
 				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
@@ -349,7 +359,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 				Mat *tmp = activityMap;
 				if (!deleteBG)
 					tmp = activityMap_Back;
-							
+				
 
 				if (debug >= DEBUG_MED && ttl_trckPpl > 0)
 				{
@@ -375,10 +385,29 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 				}
 				startTime_tmp = clock();
 				displayTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
+				//displayPredictionsTrackersMoA(trckPpl, ttl_trckPpl, *tmp, debug, frames);
 				//displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
 				//merged = displayMergeMeasurements(trckPpl, ttl_trckPpl, dtctPpl, ttl_dtctPpl, *tmp, debug, frames);
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
+				if (debug >= DEBUG_HIGH)//shows the apperance model
+				{
+						Person* trgt = NULL;
+						bool found = false;
+						int i = 0;
+						while ( i < ttl_trckPpl && !found)
+						{
+							trgt =  &(trckPpl[i]);
+							found = trgt->id == 19;
+							i++;
+						}
+						if (found)
+						{
+							updateAppearanceImg(trgt);
+							imshow("AppearanceMdl", trgt->apperanceRed);
+						}
+					
+				}
 
 				delete [] dtctPpl;
 				ttl_dtctPpl = 0;
@@ -390,6 +419,9 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 			outMoA = activityMap;
 			if (!deleteBG)
 					outMoA = activityMap_Back;
+
+			if (debug >= DEBUG_HIGH)
+				w1 << *activityMap;
 
 			if (recordOut == 1)
 			{
@@ -415,7 +447,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 		}
 		imshow(windMoA, *outMoA);
 
-		if (debug >= DEBUG_HIGH)
+		if (debug >= DEBUG_NONE)
 		{
 			//imshow("Polar Alt", polar_);
 			//imshow("Polar Alt Smooth_", polarAlt_smooth_);
@@ -424,18 +456,109 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 			imshow(nWindows[1], rgbImages[1]);
 			imshow(nWindows[2], rgbImages[2]);
 		}
-		/*if (merged)
-			waitTime = 0;
-		else
-			waitTime = 1;*/
 
-		//if (frames == 976)
+		//if (frames == 397)
 		//	waitTime = 0;
+		
+		if (debug >= DEBUG_HIGH)
+		{
+			const Person* p = NULL;
+			bool found = false;
+			int i = 0;
+			while ( i < ttl_trckPpl && !found)
+			{
+				p =  &(trckPpl[i]);
+				found = p->id == 19;
+				i++;
+			}
+			if (found && p != NULL)
+			{
+				outDebugFile << "Frame " << frames << ". Trgt Id: " << p->id << ". Dtct Id: " << p->idDetection << endl;
+			}
+		}
+
+
+		if(debug >= DEBUG_HIGH && frames > 710 && frames < 735)
+		{
+				char* common = "c:\\Dropbox\\PhD\\Matlab\\Model\\Appearance\\GNN\\UPDATE\\";
+				//Capture Map of Activity
+				char path[150];
+				strcpy(path, common);
+				char frStr[15];
+				itoa(frames, frStr, 10);
+				strcat(path, "MoA_K0");
+				strcat(path, frStr);
+				strcat(path, ".jpg");
+				imwrite(path, *activityMap);
+
+				//Capture RGB images
+				strcpy(path, common);
+				strcat(path, "rgb_K0_");
+				strcat(path, frStr);
+				strcat(path, ".jpg");
+				imwrite(path, rgbImages[0]);
+
+				////capture modles 43
+				//const Person* p = NULL;
+				//bool found = false;
+				//int i = 0;
+				//while ( i < ttl_trckPpl && !found)
+				//{
+				//	p =  &(trckPpl[i]);
+				//	found = p->id == 42;
+				//	i++;
+				//}
+				//if (found && p != NULL)
+				//{
+				//	strcpy(path, common);
+				//	strcat(path, "rgbApp_");
+				//	strcat(path, frStr);	
+				//	strcat(path, "id43.jpg");
+				//	imwrite(path, p->apperanceRed);
+
+				//	strcpy(path, common);
+				//	strcat(path, "rgbApp_");
+				//	strcat(path, frStr);	
+				//	strcat(path, "id43_dtc.jpg");
+				//	imwrite(path, p->apperanceRed_Dtc);
+				//}
+				////capture model tgt 38
+				//p = NULL;
+				//found = false;
+				//i = 0;
+				//while ( i < ttl_trckPpl && !found)
+				//{
+				//	p =  &(trckPpl[i]);
+				//	found = p->id == 38;
+				//	i++;
+				//}
+				//if (found && p != NULL)
+				//{
+				//	strcpy(path, common);
+				//	strcat(path, "rgbApp_");
+				//	strcat(path, frStr);	
+				//	strcat(path, "id38.jpg");
+				//	imwrite(path, p->apperanceRed);
+
+				//	strcpy(path, common);
+				//	strcat(path, "rgbApp_");
+				//	strcat(path, frStr);	
+				//	strcat(path, "id38_dtc.jpg");
+				//	imwrite(path, p->apperanceRed_Dtc);
+				//}
+				
+		}
 
 		int c = waitKey(waitTime);
 		
 		switch (c)
 		{
+		case 115: //s (screen capture)
+			{
+					cout << "sdfa" << endl;
+
+				//Register the similarity matrix
+			}
 		case 32:
 			{
 				saved = true;;
@@ -449,12 +572,66 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 
 		case 99: //c
 			{
-				bgComplete = true;
+				//bgComplete = true;
+				if (debug > DEBUG_HIGH)
+				{
+					const Person* p = NULL;
+					bool found = false;
+					int i = 0;
+					while ( i < ttl_trckPpl && !found)
+					{
+						p =  &(trckPpl[i]);
+						found = p->id == 19;
+						i++;
+					}
+					if (found && p != NULL)
+					{
+						imwrite("c:\\Dropbox\\PhD\\Matlab\\Model\\Appearance\\GNN\\WRONG\\rgb.jpg", rgbImages[1]);
+						imwrite("c:\\Dropbox\\PhD\\Matlab\\Model\\Appearance\\GNN\\WRONG\\rgb_Mdl.jpg", p->apperanceRed);
+						for (int i = 0; i < MODEL_NBINS; i++)
+						{
+							int v = p->heightModel[i];
+							if (v > MIN_NUM_POINTS_BIN)
+							{
+								gaussianParam gp = p->colourModel[i];
+								modelOut << frames << " " << p->id << " " << i << " " << v << " " << gp.mean.val[0] << " " << gp.mean.val[1] << " " << gp.mean.val[2] << " ";
+					
+								modelOut << gp.cov.at<float>(0,0) << " " << gp.cov.at<float>(0,1) << " " << gp.cov.at<float>(0,2) << " " << gp.cov.at<float>(1,1) <<
+										" " << gp.cov.at<float>(1,2) << " " << gp.cov.at<float>(2,2) << endl;
+							}
+							else
+							{
+								modelOut << frames << " " << p->id << " " << i << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << " " << -1 << endl;
+							}
+				
+						}
+					}
+				}
+					
 				break;
 			}
 		case 116: //t
 			{
-				trans = !trans;
+				//trans = !trans;
+				if (debug >= DEBUG_HIGH)
+				{
+					const Person* p = NULL;
+					bool found = false;
+					int i = 0;
+					while ( i < ttl_trckPpl && !found)
+					{
+						p =  &(trckPpl[i]);
+						found = p->id == 0;
+						i++;
+					}
+					if (found && p != NULL)
+					{
+						imwrite("c:\\Dropbox\\PhD\\Matlab\\Model\\rgb_blob.jpg", rgbImages[0]);
+						imwrite("c:\\Dropbox\\PhD\\Matlab\\Model\\BW_blob.jpg", p->bwImg);
+						imwrite("c:\\Dropbox\\PhD\\Matlab\\Model\\MoA_Detection.jpg", *activityMap);
+					}
+				}
+
 				break;		
 			}
 		case 100: //d
@@ -474,6 +651,9 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 				//	//imwrite("c:/Dropbox/Phd/Individual Studies/KinectDepthSensor/AlternativeSpace/MoA_Detection_Good.jpg", *activityMap);
 					waitTime=0;
 				//}
+				
+
+				
 				break;
 			}
 		}
@@ -591,7 +771,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 
 	
 
-	outDtcAreas.close();
+	//outDtcAreas.close();
 	for (int i = 0; i < NUM_SENSORS; i++)
 	{
 		kinects[i].stopDevice();
