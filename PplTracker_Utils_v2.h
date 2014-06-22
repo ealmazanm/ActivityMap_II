@@ -1930,6 +1930,16 @@ namespace AMv2
 
 		}
 
+		static bool  lowProbability(Person* trgt, Rect r, Mat& MoAp)
+		{
+			//DEBUG: Get the minimum and max prob within the search area
+			Mat MoApRoi = MoAp(r);
+			float total = sum(MoApRoi).val[0];
+			float avg = total/(r.width*r.height);
+			//outDebugFile << "Target " << trgt->id <<". Avg Prob : " << avg << endl;
+			return avg < 1.0e-6;
+		}
+
 		static void camShift_custom(Person* trgt,  Mat& MoAp, TermCriteria& term)
 		{
 			if (trgt->rrMoA.size.width == 0)
@@ -1939,7 +1949,8 @@ namespace AMv2
 			RotatedRect rr = CamShift(MoAp, r, term);
 			if ( (!(rr.size.width == 0) && !(rr.size.width > 0) && !(rr.size.width < 0)) ||
 				(!(rr.size.height == 0) && !(rr.size.height > 0) && !(rr.size.height < 0)) ||
-				 (trgt->rrMoA.size.width == 0) || rr.size.width == 0 || rr.size.height == 0 ) //TODO: ADD A PROBABILITY THRESHOLD TO BECOME LOST
+				 (trgt->rrMoA.size.width == 0) || rr.size.width == 0 || rr.size.height == 0 ||
+				 lowProbability(trgt, rr.boundingRect(), MoAp)) //TODO: ADD A PROBABILITY THRESHOLD TO BECOME LOST
 				trgt->lost++;
 			else
 			{
@@ -2010,7 +2021,7 @@ namespace AMv2
 		*/
 		static void cleanPointsTarget(Person* p,  Point** moa2D, bool** activeP, int* numP, Size sz, Mat& MoAp, Mat& MoACopy, int debug)
 		{
-			float threshold =  0.000001;
+			float threshold = 1.0e-6;
 			Rect r = getUncertainArea(p->rrMoA.boundingRect(), sz, 0.25); //TODO: CHANGE TO 0.5
 			int xMax = r.x + r.width;
 			int yMax = r.y + r.height;

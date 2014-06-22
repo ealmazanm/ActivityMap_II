@@ -14,7 +14,8 @@ PplTracker_v2::~PplTracker_v2(void)
 
 void PplTracker_v2::writeTrackingResults(vector<TrackInfo>& tracks)
 {
-	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v2.txt");
+	//ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Tracks_ellipses_v2.txt");
+	ofstream outGt ("c:\\Dropbox\\PhD\\Matlab\\TrackingEval\\KingstonEvalTool\\TBE_Ellipse\\ST_V.2\\Results\\NoCleanAll\\Tracks_ellipses_MS_order.txt");
 	//write on files the tracks for posterior evaluation
 	for (int i = 0; i < tracks.size(); i++)
 	{
@@ -151,7 +152,7 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 	while (!bShouldStop && frames < 1000)
 	{		
 		printf("\rFram %d", frames);
-
+		//outDebugFile << "Frame: " << frames << endl;
 		if (frames == 5) 
 			bgComplete = true;
 		
@@ -337,7 +338,7 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 							//updateMShiftModel(trgt);
 						}
 						//show MoaCopy
-						if (debug >= DEBUG_NONE && frames > 319)
+						if (debug >= DEBUG_NONE && waitTime == 0)
 						{
 							displayTrackersMoA(trgt, 1, MoACopy, debug, frames);
 							imshow("MoACopy", MoACopy);
@@ -349,7 +350,7 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 						cleanPointsTarget(trgt, moa2DPoint, activePoints, numberOfForegroundPoints, activityMap->size(), MoAp, MoACopy, debug); //Take out of debug after
 						totalIntervals[CLEAN_ID] += clock() - startTime_tmp; //time debugging
 
-						if (debug >= DEBUG_NONE && frames > 319)
+						if (debug >= DEBUG_NONE && waitTime == 0)
 						{
 							imshow("MoACopy", MoACopy);
 							waitKey(0);

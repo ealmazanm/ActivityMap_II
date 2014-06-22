@@ -1,3 +1,8 @@
+
+/*
+PEOPLE DETECTION: IMAGE PLANE
+*/
+
 #include "PplDetection_v3.h"
 #include <vld.h>
 
@@ -15,7 +20,8 @@ PplDetection_v3::~PplDetection_v3(void)
 
 void PplDetection_v3::writeTrackingResults(vector<TrackInfo>& tracks)
 {
-	ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Detections_ellipses_v3.txt");
+	//ofstream outGt ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\Detections_ellipses_v3.txt");
+	ofstream outGt ("c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\Results\\Detections_ellipses_IPS_NoDepth.txt");
 	//write on files the tracks for posterior evaluation
 	for (int i = 0; i < tracks.size(); i++)
 	{
@@ -33,6 +39,23 @@ void PplDetection_v3::writeTrackingResults(vector<TrackInfo>& tracks)
 	}
 
 }
+
+void pointSelection_onMouse(int event, int x, int y, int flags, void* param)
+{
+	
+	if (event == CV_EVENT_FLAG_LBUTTON)
+	{
+		//Mat* img = (Mat*)param;
+		const XnDepthPixel** p = (const XnDepthPixel**)param;
+		if (x != -1 && y != -1)
+		{
+			int d = (*p)[y*XN_VGA_X_RES+ x];
+			cout << "Point selected. x: " << x << ". y: " << y << ". Depth:" << d << endl;;
+			
+		}
+	}
+}
+
 
 
 void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debug)
@@ -72,7 +95,7 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 	
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
-	Mat background = Mat(actMapCreator.getResolution(), CV_8UC1);
+	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
 
 	//flags
 	bool bShouldStop = false;
@@ -104,6 +127,11 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 		numberOfForegroundPoints[i] = 0;
 	}
 
+	//calculate mask out regions in middle kinect
+	Rect rLeft, rRight;
+	rLeft = calculateRect(&kinects[0], &kinects[1], true);
+	rRight = calculateRect(&kinects[2], &kinects[1], false);
+
 	bool first = true;
 
 	Mat* outMoA;
@@ -113,7 +141,7 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 	int waitTime = 1;
 
 	
-	VideoWriter w, w1;
+	VideoWriter w1;
 	recordOut = 0;
 	if (recordOut == 1)
 	{
@@ -125,6 +153,11 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 	nWindows[1] =  "rgb 1";
 	nWindows[2] =  "rgb 2";
 
+	char* fWindows[NUM_SENSORS];
+	fWindows[0] =  "fore 0";
+	fWindows[1] =  "fore 1";
+	fWindows[2] =  "fore 2";
+
 	char* windMoA = "Activity Map";
 	clock_t startTime = clock();
 	clock_t startTotalTime = clock();
@@ -132,6 +165,11 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 	int nPoints = 0;
 	int frames = 0;
 	int debugFrame = -1;
+
+	//DEbug for the detection part
+	bool print = false; //used to control when to print
+	bool trainingDset = false; //Print out CC values
+	vector<int> trainDsetValues(50);
 
 	while (!bShouldStop && frames < 1000)
 	{		
@@ -179,35 +217,108 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 		{
 			if (first)
 			{
-				whiteBack = Mat::zeros(actMapCreator.getResolution(), CV_8UC1) + 255;
-				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC1);
-				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC1);
+				whiteBack = Mat::zeros(actMapCreator.getResolution(), CV_8UC3);
+				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				Utils::initMat3u(whiteBack, 255);
 				first = false;
 			}
 			whiteBack.copyTo(*activityMap);
 			background.copyTo(*activityMap_Back);
+
+			
+			PersonIPS dtctPpl[NUM_SENSORS][MAX_PEOPLE];
+			int ttl_dtctPpl[NUM_SENSORS] = {0,0,0};
+
 			for (int i = 0; i < NUM_SENSORS; i++)
 			{
 				startTime_tmp = clock(); //time debuggin
 				numberOfForegroundPoints[i] = subtractors[i].subtraction(pointsFore2D[i], &(depthMat[i]), &(masks[i]));
-				if (debug >= DEBUG_HIGH)//to show the foreground points on the image plane
-					foreImages[i] = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
-					updateForegroundImg(foreImages[i], pointsFore2D[i], numberOfForegroundPoints[i]);
+				foreImages[i] = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
+				updateForegroundImg(foreImages[i], pointsFore2D[i], numberOfForegroundPoints[i]);
 				totalIntervals[BSUB_ID] += clock() - startTime_tmp; //time debugging
 				nPoints += numberOfForegroundPoints[i];
 
-				//todo: people segmentation
+				std::vector < std::vector<XnPoint3D> > blobs;
+				threshold(foreImages[i], foreImages[i], 0, 1, THRESH_BINARY);
+				findBlobsII(foreImages[i], blobs, depthMaps[i]);
+				std::vector < std::vector<XnPoint3D> > blobsFilter;
+				thresholdSmallBlobs(blobs, blobsFilter);
+				//for debugging purposes
+				foreImages[i] = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
+					
+				if (debug >= DEBUG_HIGH && (frames == 291 || frames == 294) && i == 0)
+				{
+					updateForegroundImgII(foreImages[i], blobsFilter, depthMaps[i], print);
+					//save foeground image and RGB
+					if (frames == 291)
+					{
+						imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\fore0_Right_291_Bef.jpg", foreImages[i]);
+						imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB0_Right_291_Bef.jpg", rgbImages[i]);
+					}
+					else if (frames == 294)
+					{
+						imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\fore0_Miss_294_Bef.jpg", foreImages[i]);
+						imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB0_Miss_294_Bef.jpg", rgbImages[i]);
+					}
 
+					imshow(fWindows[i], foreImages[i]);
+					waitKey(0);
+				}
+
+				for (int k = 0; k < blobsFilter.size(); k++)
+				{
+					std::vector<XnPoint3D> *blob = &(blobsFilter[k]);
+					int ttlPnts = blob->size();
+					XnPoint3D* p2dD = &((*blob)[0]);
+					XnPoint3D* p3d = new XnPoint3D[ttlPnts];
+					kinects[i].arrayBackProject(p2dD, p3d, ttlPnts);
+					kinects[i].tiltCorrection(p3d, ttlPnts);
+					std::vector < std::vector<XnPoint3D> > subBlobs2dD;
+					std::vector < std::vector<XnPoint3D> > subBlobs3d;
+					//any == true if there are at leat one blob
+					bool any = look4MergesBlob(p2dD, p3d, ttlPnts, subBlobs2dD, subBlobs3d, false, k, frames, i);
+					//bool any = true;
+					int ttlSubB = subBlobs2dD.size();
+					int idP = 0;
+					if (any && ttlSubB > 0)
+					{
+						for (int s = 0; s < ttlSubB; s++)
+						{
+							XnPoint3D* sb2dD = &(subBlobs2dD[s][0]);
+							XnPoint3D* sb3d = &(subBlobs3d[s][0]);
+							int ttlSubPnts = subBlobs2dD[s].size();
+							detectPeople(depthMaps[i], sb2dD, sb3d, ttlSubPnts, kinects[i], dtctPpl[i], ttl_dtctPpl[i], i, foreImages[i], false, idP, rLeft, rRight);
+						}
+					}
+					else if (any && ttlSubB == 0) //if there are at least 1
+					{
+						//treat it as single blob
+						detectPeople(depthMaps[i], p2dD, p3d, ttlPnts, kinects[i], dtctPpl[i], ttl_dtctPpl[i], i, foreImages[i], false, idP, rLeft, rRight);
+					}
+
+					//generate tracks history
+					//generateTrackHistoryIPS(tracks, dtctPpl[i], ttl_dtctPpl[i] , frames);	
+
+				}
+				//debug: images post-processed (in the detectPeople function tenth parameter true
+				//if (frames == 264 && i == 2)
+				//{
+				//	//save foeground image and RGB
+				//	imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\sreenshots\\Example6\\fore0_Fail_264_Aft.jpg", foreImages[i]);
+				//	imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\sreenshots\\Example6\\RGB0_Right_264_Aft.jpg", rgbImages[i]);
+				//}
+				//else if (frames == 294)
+				//{
+				//	//save foeground image and RGB
+				//	//imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\fore0_Miss_294_Aft.jpg", foreImages[i]);
+				//	//imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB0_Miss_294_Aft.jpg", rgbImages[i]);
+				//}
+				//imshow(fWindows[i], foreImages[i]);
+				//waitKey(0);
 			}
-			if (debug >= DEBUG_HIGH && nPoints > 0)
+			if (debug >= DEBUG_NONE && nPoints > 0)
 			{
-				Mat acMoA = Mat::zeros(activityMap->size(), CV_16U);
-				Person* dtctPpl = new Person[MAX_PEOPLE];
-				int ttl_dtctPpl = 0;
-
-				int ttl = RANGE_ROWS*RANGE_COLS;
-				
-				int ttlPnts = 0;
 				for (int i = 0; i < NUM_SENSORS; i++)
 				{
 					startTime_tmp = clock();
@@ -221,38 +332,22 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 
 				
 					startTime_tmp = clock();
-					updateActivityMap(acMoA, points3D[i], numberOfForegroundPoints[i]);
-						
-					if (i == 2)
-					{
-						Utils::convert16to8(&acMoA, *activityMap);
-						Utils::convert16to8(&acMoA, *activityMap_Back);
-							//threshold(*activityMap, *activityMap, 254, 255, THRESH_BINARY);
-					}
+					updateActivityMapII(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
 					totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
-					
-				}
-		
-				startTime_tmp = clock();
-				displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
-				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
-				
 
-				delete [] dtctPpl;
-				ttl_dtctPpl = 0;
-				for (int i = 0; i < NUM_SENSORS; i++)
+					displayDetectedPplIPS(dtctPpl[i], ttl_dtctPpl[i], rgbImages[i], *activityMap);
+
 					delete []points3D[i];
-
+				}
 			}
+			
 			outMoA = activityMap;
 			if (!deleteBG)
 					outMoA = activityMap_Back;
 
 			if (recordOut == 1)
-			{
-				w << polarAlt_smooth_;
 				w1 << *activityMap;
-			}
+
 		}
 		else
 		{			
@@ -270,31 +365,40 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 		}
 		imshow(windMoA, *outMoA);
 
-		if (debug >= DEBUG_HIGH)
+		if (debug >= DEBUG_NONE)
 		{
 			imshow(nWindows[0], rgbImages[0]);
 			imshow(nWindows[1], rgbImages[1]);
 			imshow(nWindows[2], rgbImages[2]);
 		}
 
+		/*if (frames == 264)
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\sreenshots\\Example6\\RGB0_Right_264_Ellipses.jpg", rgbImages[2]);
+*/
+
 		int c = waitKey(waitTime);
 		if (c == 13)
 		{
 			waitTime = !waitTime;
 
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore0.jpg", foreImages[0]);
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore1.jpg", foreImages[1]);
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore2.jpg", foreImages[2]);
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/MoA.jpg", *outMoA);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore0.jpg", foreImages[0]);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore1.jpg", foreImages[1]);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/fore2.jpg", foreImages[2]);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/MoA.jpg", *outMoA);
 
 		}
 		else if (c == 27)
 			bShouldStop = true;
+		else if (c == 99) // c
+		{
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB_ellipses0.jpg", rgbImages[0]);
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB_ellipses1.jpg", rgbImages[1]);
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\RGB_ellipses2.jpg", rgbImages[2]);
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\IPS_seg\\MoA_ellipses.jpg", *outMoA);
+		}
 
 		frames++;
 	}
-
-	delete []pntsMap2;
 
 	for (int i = 0; i < NUM_SENSORS; i++)
 		delete []pointsFore2D[i];
@@ -303,7 +407,7 @@ void PplDetection_v3::detection(int fromVideo, int recordOut, int tilt, int debu
 	delete activityMap;
 	delete activityMap_Back;
 
-	writeTrackingResults(tracks);
+	//writeTrackingResults(tracks);
 
 
 	totalIntervals[TOT_ID] = clock() - startTotalTime;

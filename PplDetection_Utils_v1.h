@@ -98,11 +98,26 @@ namespace PplDtcV1
 		static const int MODEL_BINRANGE = 250;
 		static const int MODEL_NBINS = (MODEL_MAX_HEIGHT-MODEL_MIN_HEIGHT)/MODEL_BINRANGE;
 		//static const int MODEL_NBINS = (ActivityMap_Utils::CEILING_THRESHOLD-ActivityMap_Utils::FLOOR_THRESHOLD)/MODEL_BINRANGE;
-		static const int MAX_PEOPLE = 100;
+		static const int MAX_PEOPLE = 20;
 
 		static float meas_std = 1;
 		static float proc_std = 30;
 		static const int MAX_POINTS_BIN = 20000;
+
+		struct PersonIPS
+		{
+			int id;
+			Point meanIPS;
+			Mat covIPS;
+
+			Mat mean3D;
+			Mat cov3D;
+
+			Point meanMoA;
+			Mat covMoA;
+
+			Scalar colour;
+		};
 
 		struct Person
 		{
@@ -179,6 +194,9 @@ namespace PplDtcV1
 		static ofstream outMerge("c:\\Dropbox\\PhD\\Matlab\\DataAssociation\\SequenceB\\mergeMeasurements.txt");
 		static const char* out_dcfs_system ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\dcfs_system.xml");
 		static const char* out_merge_system ("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet2\\mergeMeasurements_system.xml");
+
+		static ofstream depthOut("c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\depths_TrainigDSet_II.txt");
+		static ofstream depthOutSm("c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\depths_TrainigDSetSm_II.txt");
 
 
 	//FUNCTIONS
@@ -322,6 +340,34 @@ namespace PplDtcV1
 			}
 		}
 
+		static void updateActivityMapII(Mat& activityMap, Mat& activityMap_back, const ActivityMap_Utils* am, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D)
+		{
+			for (int i = 0; i < nP; i++)
+			{
+				Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D[i], MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+
+				if (p2D.x != -1)
+				{
+					if (p2D.y >= 480)
+						p2D.y = 479;
+					uchar* ptr = activityMap.ptr<uchar>(p2D.y);
+					uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
+
+					ptr[3*p2D.x] = ptr_back[3*p2D.x] = 0;
+					ptr[3*p2D.x+1] = ptr_back[3*p2D.x+1] = 0;
+					ptr[3*p2D.x+2] = ptr_back[3*p2D.x+2] = 0;
+				}
+				//else
+				//{
+				//	if (debug > DEBUG_NONE)
+				//		outDebugFile << "UpdateActivityMap: BAD PROJECTION (MoA). Info: 3DPoint: " << p3D[i].X <<", "<< p3D[i].Y << ", " << p3D[i].Z <<
+				//		"MAX_RANGE: " << MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
+				//		". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+				//}
+			}
+		}
+
+
 		static void updateForegroundImg(Mat& forImg, XnPoint3D* forePnts, int nP)
 		{
 			uchar* forImg_data = (uchar*)forImg.data;
@@ -451,8 +497,8 @@ namespace PplDtcV1
 			blobs.clear();
 
 			// Fill the label_image with the blobs
-			// 0  - background
-			// 1  - unlabelled foreground
+			// 1  - background
+			// 0  - unlabelled foreground
 			// 2+ - labelled foreground
 
 			cv::Mat label_image;
@@ -470,7 +516,7 @@ namespace PplDtcV1
 				int *row = lbl_data + y*lbl_step;
 				for(int x=0; x < lbl_Cols; x++) 
 				{
-					if(row[x] > 0) 
+					if(row[x] == 0) 
 					{
 						continue;
 					}
@@ -502,6 +548,73 @@ namespace PplDtcV1
 				}
 			}
 		}
+
+
+
+		static void findBlobsII(const cv::Mat &binary, std::vector < std::vector<XnPoint3D> > &blobs, const XnDepthPixel* dMap)
+		{
+			blobs.clear();
+
+			// Fill the label_image with the blobs
+			// 0  - background
+			// 1  - unlabelled foreground
+			// 2+ - labelled foreground
+
+			cv::Mat label_image;
+			binary.convertTo(label_image, CV_32SC1);
+
+			int label_count = 2; // starts at 2 because 0,1 are used already
+
+			int lbl_Rows = label_image.rows;
+			int lbl_Cols = label_image.cols;
+			int* lbl_data = (int*)label_image.data;
+			int lbl_step = label_image.step/sizeof(int);
+
+			for(int y=0; y < lbl_Rows; y++) 
+			{
+				int *row = lbl_data + y*lbl_step;
+				for(int x=0; x < lbl_Cols; x++) 
+				{
+					if(row[x] == 0) 
+					{
+						continue;
+					}
+					else if (row[x] == 1)
+					{
+						cv::Rect rect;
+						cv::floodFill(label_image, cv::Point(x,y), label_count, &rect, 0, 0, 4);
+
+						std::vector <XnPoint3D> blob;
+
+						int maxI = rect.y + rect.height;
+						int maxJ = rect.x + rect.width;
+						for(int i=rect.y; i < maxI; i++) 
+						{
+							int *row2 = lbl_data + i*lbl_step;
+							for(int j=rect.x; j < maxJ; j++) 
+							{
+								if(row2[j] != label_count) 
+								{
+									continue;
+								}
+								XnPoint3D p2dD;
+								p2dD.X = j; p2dD.Y = i;
+								p2dD.Z = dMap[i* XN_VGA_X_RES + j];
+								blob.push_back(p2dD);
+							}
+						}
+
+						blobs.push_back(blob);
+
+						label_count++;
+					}
+				}
+			}
+		}
+
+		
+
+
 
 		/*
 		Convert a point from the remap polar space rep. to the MoA (3D)
@@ -988,6 +1101,14 @@ namespace PplDtcV1
 
 		}
 
+		static void maskOutOverlapping(Mat& depthMat, Rect rLeft, Rect rRight)
+		{
+			Mat leftRoi = depthMat(rLeft);
+			Mat rightRoi = depthMat(rRight);
+			leftRoi = Mat::zeros(leftRoi.size(), CV_16U);
+			rightRoi = Mat::zeros(rightRoi.size(), CV_16U);
+		}
+
 		static Rect calculateRect(KinectSensor* kOut, KinectSensor* k, bool left)
 		{
 			int angle = 29;
@@ -1017,6 +1138,7 @@ namespace PplDtcV1
 		//static void drawPersonPointsCov_debug(const Perso&n p, Mat* moa, Scalar color)
 		static void drawPersonPointsCov_debug(const Point& pntMean, const Mat& cov, Mat* moa, Scalar color, int thickness, char* txt)
 		{
+			
 			SVD svd(cov);
 	
 			float bigAxis = sqrtf(svd.w.at<float>(0))*2;
@@ -1032,6 +1154,7 @@ namespace PplDtcV1
 			if (!upperQuadrant)
 				angle = -angle;
 
+			cv::circle(*moa, pntMean, 2, color, thickness);
 			cv::ellipse(*moa, pntMean, Size(bigAxis, smallAxis), angle, 0, 360, color, thickness);	
 			if (txt != NULL)
 				putText(*moa, txt, Point(pntMean.x + bigAxis, pntMean.y), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, Scalar(0,0,255));
@@ -1118,24 +1241,50 @@ namespace PplDtcV1
 				//pos.bbox = Rect(mean.x-varX, mean.y-varY, varX*2, varY*2);
 				
 
-				bool found = false;
+				/*bool found = false;
 				int iter = 0;
 				while (!found && iter < tracks.size())
 				{		
 					found = (trckPpl[i].id == tracks[iter].id);
 					iter++;
 				}
-				if (!found)
+				if (!found)*/
 				{
 					TrackInfo trck;
 					trck.id = trckPpl[i].id;
 					trck.trajectory.push_back(pos);
 					tracks.push_back(trck);
 				}
-				else
-					tracks[--iter].trajectory.push_back(pos);
+				//else
+				//	tracks[--iter].trajectory.push_back(pos);
 			}
 		}
+
+
+		/*
+		Update the tracks trajectory with the information from the current frames.
+		Used to store in memory the trajectories of all tracks in the entire sequence
+		*/
+		static void generateTrackHistoryIPS(vector<TrackInfo>& tracks, PersonIPS* trckPpl, int& ttl_trckPpl, int frames)
+		{
+			for (int i = 0; i < ttl_trckPpl; i++)
+			{
+				//Create the position at current frame
+				PersonIPS p = trckPpl[i];
+				Position pos;
+				pos.frameId = frames;
+				pos.mean = p.meanMoA;
+				pos.covX = p.covMoA.ptr<float>(0)[0];
+				pos.covY = p.covMoA.ptr<float>(1)[1];
+				pos.covXY = p.covMoA.ptr<float>(0)[1];
+
+				TrackInfo trck;
+				trck.id = trckPpl[i].id;
+				trck.trajectory.push_back(pos);
+				tracks.push_back(trck);
+			}
+		}
+
 
 		static void normalizeRPS(const Mat* src, Mat& out)
 		{
@@ -1155,5 +1304,802 @@ namespace PplDtcV1
 			}
 		}
 
-}
 
+		static Mat createForegroundImage(XnPoint3D* p2D, int ttlPnts)
+		{
+			//Create a binary image of foreground points
+			Mat foreBin = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
+			for (int i = 0; i < ttlPnts; i++)
+			{
+				XnPoint3D* p = &(p2D[i]); 
+				uchar* ptr = foreBin.ptr<uchar>(p->Y);
+				ptr[(int)p->X] = 255;
+			}
+			return foreBin;
+		}
+
+		static void detectPeopleIPS(XnPoint3D* p2D, int ttlPnts, Person* dtctPpl, int& ttl_dtctPpl, int debug, int frames)
+		{
+			//Create a binary image of foreground points
+			Mat foreBin = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC1);
+			for (int i = 0; i < ttlPnts; i++)
+			{
+				XnPoint3D* p = &(p2D[i]); 
+				uchar* ptr = foreBin.ptr<uchar>(p->Y);
+				ptr[3*(int)p->X] = 255;
+			}
+
+
+
+
+			//debug: throw to the depth dimension
+			if (debug > DEBUG_MED)
+			{
+				for (int i = 0; i < ttlPnts; i++)
+				{
+					depthOut << p2D[i].Z << endl;
+				}
+			}
+		}
+
+		static void thresholdSmallBlobs(std::vector < std::vector<XnPoint3D> > blobs, std::vector < std::vector<XnPoint3D> >& blobsFilter)
+		{
+			vector<vector<XnPoint3D>>::iterator iter = blobs.begin();
+
+			while (iter != blobs.end())
+			{
+				vector<XnPoint3D> b = *iter;
+				int maxI = b.size();
+				if (maxI > 600)
+					blobsFilter.push_back(b);
+
+				iter++;
+			}
+
+		}
+		
+		static void updateForegroundImgII(Mat& foreBinary, std::vector < std::vector<XnPoint3D> > blobs, const XnDepthPixel* dMap, bool print)
+		{
+			foreBinary = Mat::zeros(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
+			vector<vector<XnPoint3D>>::iterator iter = blobs.begin();
+
+			//static ofstream depthOut("c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\depths_hist.txt");
+			//char common[] = "c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\blobs\\depths_histFail401_";
+			int i = 0;
+			while (iter != blobs.end())
+			{
+				bool pass = false;
+				vector<XnPoint3D> b = *iter;
+
+				int maxI = b.size();
+				if (maxI > 600)
+				{
+					//char idTxt[15];
+					//itoa(i, idTxt, 10);
+					//char path[150];
+					//strcpy(path, common);
+					//strcat(path, idTxt);
+					//strcat(path, ".txt");
+					//ofstream depthOutBlob(path);
+
+
+					//int ttlX, ttlY, ttlD;
+					//ttlX = ttlY = ttlD = 0;
+					for (int i = 0; i < maxI; i++)
+					{
+						XnPoint3D p = b[i];
+						//int d = dMap[(int)p.y*XN_VGA_X_RES+ (int)p.x];
+						//ttlD += d;
+						//ttlX += p.x;
+						//ttlY += p.y;
+						foreBinary.ptr<uchar>((int)p.Y)[3*(int)p.X] = 255;
+						foreBinary.ptr<uchar>((int)p.Y)[3*(int)p.X + 1] = 255;
+						foreBinary.ptr<uchar>((int)p.Y)[3*(int)p.X + 2] = 255;
+						//if (print)
+						//	depthOutBlob << d << endl;
+					}
+
+					/*int meanX = ttlX/maxI;
+					int meanY = ttlY/maxI;
+					int meanD = ttlD/maxI;
+					char txt[20];
+					itoa(meanD, txt, 10);*/
+				//	putText(foreBinary, txt, Point(meanX, meanY), FONT_HERSHEY_SCRIPT_SIMPLEX, 0.5, Scalar(0,0,255));
+				//	depthOut << meanD << " " << maxI << endl;
+					/*if (print)
+						print = false;*/
+
+				}
+				iter++;
+				i++;
+			}
+		}
+
+
+		static void writeOutTrainingDSetMat(Mat& trainDsetValues, Mat& trainDsetValuesSmooth)
+		{
+			ushort* d_data = (ushort*)trainDsetValues.data;
+			ushort* d_dataSmooth = (ushort*)trainDsetValuesSmooth.data;
+
+			int ttl = trainDsetValues.cols;
+			int maxVal = 0;
+			int maxBin = -1;
+			for (int i = 0; i < ttl; i++)
+			{
+				int vSm = d_dataSmooth[i];
+				if (vSm >maxVal)
+				{
+					maxVal = vSm;
+					maxBin = i;
+				}
+			}
+			float depth = maxBin*20 + (20/2);
+			depthOutSm << depth << " " << maxVal << endl;
+
+		}
+
+		static void writeOutBlobPoints(Mat& depthHistS, int idBlob, int frames)
+		{
+			char common[200];
+			strcpy(common, "c:\\Dropbox\\PhD\\Matlab\\DetectionEval\\IPS\\blobs\\depths_hist_Miss_262_");
+			
+			char idTxt[15];
+			itoa(idBlob, idTxt, 10);
+			char path[150];
+			strcpy(path, common);
+			strcat(path, idTxt);
+			strcat(path, ".txt");
+			ofstream depthOutBlob(path);
+
+			ushort* d_data = (ushort*)depthHistS.data;
+			int ttl = depthHistS.cols;
+			for (int i = 0; i < ttl; i++)
+			{
+				int v = d_data[i];
+				if (v >= 0)
+					depthOutBlob << v << endl;
+			}
+			
+		}
+
+
+		
+		void static writeOutTrainingDSet(vector<int> trainDsetValues)
+		{
+			vector<int>::iterator iterB = trainDsetValues.begin();
+			vector<int>::iterator iterE = trainDsetValues.end();
+			int i = 0;
+			while (iterB != iterE)
+			{
+				int v = *iterB;
+				if (v > 0)
+				{
+					float depth = i*20 + (20/2);
+					depthOut << depth << " " << v << endl;
+				}
+				else if (v < 0)
+					cout << "Error writingOutTrainingDsest" << endl;
+
+				iterB++;
+				i++;
+			}
+
+		}
+
+		void static populateDepthHist(vector<int> &histD, XnPoint3D* p3d, int ttlPnts)
+		{
+			for (int i = 0; i < ttlPnts; i++)
+			{
+				XnPoint3D *p = &(p3d[i]);
+				int bin = p->Z/20;
+				histD[bin]++;
+			}
+
+		}
+
+		static void populateMatDepthHist(Mat& depthHist, XnPoint3D* p3d, int ttlPnts)
+		{
+			ushort* d_data = (ushort*)depthHist.data;
+			//int d_step = depthHist.step/sizeof(ushort);
+
+			for (int i = 0; i < ttlPnts; i++)
+			{
+				XnPoint3D *p = &(p3d[i]);
+				int bin = p->Z/20; //size of the bins 20 mm.
+				d_data[bin]++;
+			}
+
+		}
+
+				
+		void static populateDepthHist (vector<int> &histD, std::vector<cv::Point2d > blob, const XnDepthPixel* dMap)
+		{
+			vector<Point2d>::iterator iterPnts = blob.begin();
+			vector<Point2d>::iterator iterPntsEnd = blob.end();
+			while (iterPnts != iterPntsEnd)
+			{
+				Point2d p = *iterPnts;
+				int d = dMap[(int)p.y*XN_VGA_X_RES+ (int)p.x];
+				int bin = d/20;
+				histD[bin]++;
+				iterPnts++;
+			}
+		}
+
+		//Store the number of depths in each range (bin)
+		void static populateTDSet(vector<int> &trainDsetValues, std::vector < std::vector<cv::Point2d > > blobsFilter, const XnDepthPixel* dMap)
+		{
+			vector<vector<Point2d>>::iterator iterBlobs = blobsFilter.begin();
+			vector<vector<Point2d>>::iterator iterBlobsEnd = blobsFilter.end();
+			
+			while (iterBlobs != iterBlobsEnd)
+			{
+				vector<Point2d> points = *iterBlobs;
+				
+				populateDepthHist(trainDsetValues, points, dMap);
+				
+				iterBlobs++;
+			}
+
+		}
+
+
+		static void binarizeMatDepthHist(Mat& depthHistS, Mat& depthHistBin, float a, float b)
+		{
+			ushort* d_dataS = (ushort*)depthHistS.data;
+			uchar* d_dataB = (uchar*)depthHistBin.data;
+
+			int ttlRows = depthHistS.cols;
+			for (int i = 0; i < ttlRows; i++)
+			{
+				int v = d_dataS[i];
+				float dBin = i*20; //bin size (mm.)
+				float thresh = a*exp(b*dBin);
+				if (v >= thresh)
+					d_dataB[i] = 1;
+				else
+					d_dataB[i] = 0;
+
+			}
+		}
+
+
+		static void binarizeDepthHist(const vector<int> &depthHist, vector<int> &depthHistBin, float a, float b)
+		{
+			int max = depthHist.size();
+			for (int i = 0; i < max; i++)
+			{
+				int v = depthHist[i];
+				float dBin = i*200; //bin size (mm.)
+				float thresh = a*exp(b*dBin);
+				if (v >= thresh)
+					depthHistBin[i] = 1;
+				else
+					depthHistBin[i] = 0;
+			}
+		}
+
+
+		static void findBlobs1DMat(Mat& depthHistBin, Mat& depthHist, std::vector < std::vector<int> > &blobs1D, std::vector <float> &blobsDCentroid)
+		{
+			blobs1D.clear();
+
+			// Fill the label_image with the blobs
+			// 0  - background
+			// 1  - unlabelled foreground
+			// 2+ - labelled foreground
+
+	
+			int label_count = 2; // starts at 2 because 0,1 are used already		
+			int max = depthHistBin.cols;
+
+			ushort* d_dataS = (ushort*)depthHist.data;
+			uchar* d_dataB = (uchar*)depthHistBin.data;
+
+			for(int i=0; i < max; i++) 
+			{
+				if(d_dataB[i] == 0) 
+				{
+					continue;
+				}
+				else if (d_dataB[i] == 1)
+				{
+					std::vector <int> blob;
+					bool end = false;
+					int j = i;
+					int ttlD = 0; //sum of weights
+					double wd = 0; //for the mean
+					//double wdd = 0; //for the variance
+					while (j < max && d_dataB[j] == 1)
+					{
+						d_dataB[j] = label_count;
+						int ttlDBin = d_dataS[j];
+
+						ttlD += ttlDBin;
+						wd += j*ttlDBin;
+						//wdd += ttlDBin*j*j;
+
+						blob.push_back(j);
+						j++;
+					}
+					double centroid = wd/ttlD;
+					//double var = wdd/ttlD - (centroid*centroid);
+					//if (var < 0)
+					//	cout << "Stop" << endl;
+					//if (var == 0)
+					//	var = 1;
+
+					//double std = powf(var, 0.5);
+					//pair<double, double> p;
+					//p.first = centroid*200; //The centroid is expressed in mm.
+					//p.second = std*200;
+					blobsDCentroid.push_back(centroid*20); //centroid expressed in mm.
+					blobs1D.push_back(blob);
+					label_count++;
+				}
+			}
+
+		}
+
+
+		/*
+		Find Blobs in a 1D histogram
+		blobs1D: contain the blobs and for each blob its corresponding bins
+		blobsDCentroid: For each blob associates its centroid (weighed bin);
+		*/
+		static void findBlobs1D(vector<int> &depthHistBin, vector<int> &depthHist, std::vector < std::vector<int> > &blobs1D, std::vector <float> &blobsDCentroid)
+		{
+			blobs1D.clear();
+
+			// Fill the label_image with the blobs
+			// 0  - background
+			// 1  - unlabelled foreground
+			// 2+ - labelled foreground
+
+	
+			int label_count = 2; // starts at 2 because 0,1 are used already		
+			int max = depthHistBin.size();
+
+			for(int i=0; i < max; i++) 
+			{
+				if(depthHistBin[i] == 0) 
+				{
+					continue;
+				}
+				else if (depthHistBin[i] == 1)
+				{
+					std::vector <int> blob;
+					bool end = false;
+					int j = i;
+					int ttlD = 0; //sum of weights
+					double wd = 0; //for the mean
+					//double wdd = 0; //for the variance
+					while (j < max && depthHistBin[j] == 1)
+					{
+						depthHistBin[j] = label_count;
+						int ttlDBin = depthHist[j];
+
+						ttlD += ttlDBin;
+						wd += j*ttlDBin;
+						//wdd += ttlDBin*j*j;
+
+						blob.push_back(j);
+						j++;
+					}
+					double centroid = wd/ttlD;
+					//double var = wdd/ttlD - (centroid*centroid);
+					//if (var < 0)
+					//	cout << "Stop" << endl;
+					//if (var == 0)
+					//	var = 1;
+
+					//double std = powf(var, 0.5);
+					//pair<double, double> p;
+					//p.first = centroid*200; //The centroid is expressed in mm.
+					//p.second = std*200;
+					blobsDCentroid.push_back(centroid*200); 
+					blobs1D.push_back(blob);
+					label_count++;
+				}
+			}
+		}
+
+		
+		static int closerBlobI(int d, std::vector <float>&  blobsDistr)
+		{
+			float minDist = 10000;
+			int minPos = -1;
+			int nBlobs = blobsDistr.size();
+			for (int i = 0; i< nBlobs; i++)
+			{
+				float bDstr = blobsDistr[i];
+				float dist = abs(d - bDstr);
+				if (dist < minDist)
+				{
+					minDist = dist;
+					minPos = i;
+				}
+			}
+			if (minPos != -1)
+				return minPos;
+			else
+			{
+				cout << "Error" << endl;
+				return -2;
+			}
+
+		}
+
+		/*
+		Find the centroid closer to p among all centroids
+		*/
+		static int closerBlob(const Point2d* p, const std::vector <float>& blobsDCentroid, const XnDepthPixel* dMap)
+		{
+			float minDist = 10000;
+			int minPos = -1;
+			int nBlobs = blobsDCentroid.size();
+			int d = dMap[(int)p->y*XN_VGA_X_RES+ (int)p->x];
+			for (int i = 0; i< nBlobs; i++)
+			{
+				float bDstr = blobsDCentroid[i];
+				float dist = abs(d - bDstr);
+				if (dist < minDist)
+				{
+					minDist = dist;
+					minPos = i;
+				}
+			}
+			if (minPos != -1)
+				return minPos;
+			else
+			{
+				cout << "Error" << endl;
+				return -2;
+			}
+		}
+
+		//Returns false if there is not enough evidence to support a person
+		static bool look4MergesBlob(XnPoint3D* p2dD, XnPoint3D* p3d, int ttlPnts, std::vector < std::vector<XnPoint3D> > &subBlobs2dD, std::vector < std::vector<XnPoint3D> > &subBlobs3d, bool print, int idBlob, int frames, int cam)
+		{
+			//Exponentical coeeficients ae^bx
+			float a = 3300;
+			float b = -0.0006;
+			Mat depthHist = Mat::zeros(1,500, CV_16S);
+			Mat depthHistS = Mat::zeros(1,500, CV_16S);
+			Mat depthHistBin = Mat::zeros(1,500, CV_8UC1);
+
+			populateMatDepthHist(depthHist, p3d, ttlPnts);
+			GaussianBlur(depthHist, depthHistS, Size(7, 1), 0, 0);
+			if (print && frames == 264 && cam == 2)
+			{
+				writeOutBlobPoints(depthHistS, idBlob, frames); 
+				//writeOutTrainingDSetMat(depthHist, depthHistS);
+			}
+
+			binarizeMatDepthHist(depthHistS, depthHistBin, a, b);
+			std::vector<std::vector<int>> blobs1D;
+			std::vector <float> blobsDistr;
+			findBlobs1DMat(depthHistBin, depthHist, blobs1D, blobsDistr);
+
+			int nBlobs = blobs1D.size();
+			if(nBlobs > 1)
+			{
+				//create a new list of sub-blobs
+				subBlobs2dD = std::vector < std::vector<XnPoint3D> >(nBlobs);
+				subBlobs3d = std::vector < std::vector<XnPoint3D> >(nBlobs);
+
+				for (int i = 0; i < ttlPnts; i++)
+				{
+					int d = p3d[i].Z;
+					int idBlob = closerBlobI(d, blobsDistr);
+					if (idBlob > -1 && idBlob < nBlobs)
+					{
+						subBlobs2dD[idBlob].push_back(p2dD[i]);
+						subBlobs3d[idBlob].push_back(p3d[i]);
+					}
+					else
+						cout << "Error" << endl;
+				}
+			}
+			if (nBlobs == 0)
+				return false;
+			else 
+				return true;
+
+		}
+
+		//static void look4Merges(std::vector < std::vector<XnPoint3D> > blobsFilter, std::vector < std::vector<XnPoint3D> > &finalBlobs, const XnDepthPixel* dMap, int frames, int cam)
+		//{
+		//	//Exponentical coeeficients ae^bx
+		//	float a = 14170;
+		//	float b = -0.0005532;
+		//	vector<int> depthHist(50);
+		//	vector<int> depthHistBin(50);
+		//	//for each blob determine how many blobs contain
+		//	std::vector < std::vector<XnPoint3D> >::iterator iterB = blobsFilter.begin();
+		//	std::vector < std::vector<XnPoint3D> >::iterator iterE = blobsFilter.end();
+		//	while (iterB != iterE)
+		//	{
+		//		std::fill(depthHist.begin(), depthHist.end(), 0);
+		//		std::vector<XnPoint3D> blob = *iterB;
+		//		populateDepthHist(depthHist, blob, dMap);
+		//		binarizeDepthHist(depthHist, depthHistBin, a, b);
+		//		std::vector<std::vector<int>> blobs1D;
+		//		std::vector <float> blobsDistr;
+		//		findBlobs1D(depthHistBin, depthHist, blobs1D, blobsDistr);
+		//		//If it contain more than one- then classify the pixels of the big blob among the smaller blobs and add them to the final list
+		//		int nBlobs = blobs1D.size();
+		//		if(nBlobs > 1)
+		//		{
+		//			//create a new list of sub-blobs
+		//			std::vector < std::vector<cv::Point2d > > subBlobs(nBlobs);
+
+		//			int nPoints = blob.size();
+		//			for (int i = 0; i < nPoints; i++)
+		//			{
+		//				Point2d* p = &(blob[i]);
+		//				if(frames == 312 && cam == 0 && p->x == 357 && p->y == 371)
+		//					cout << "Stop" << endl;
+		//				int idBlob = closerBlob(p, blobsDistr, dMap);
+		//				if (idBlob > -1 && idBlob < nBlobs)
+		//					subBlobs[idBlob].push_back(*p);
+		//				else
+		//					cout << "Error" << endl;
+		//			}
+
+		//			//Add them all to the final list
+		//			for (int i = 0; i < nBlobs; i++)
+		//				finalBlobs.push_back(subBlobs[i]);
+		//		}
+		//		else
+		//			finalBlobs.push_back(blob);
+
+
+		//		iterB++;
+		//	}
+		//}
+
+
+
+		static void updateForegroundImgIII(Mat& foreBinFinal, const std::vector < std::vector<cv::Point2d > > &finalBlobs)
+		{
+			int ttlBlobs = finalBlobs.size();
+			for (int i = 0; i < ttlBlobs; i++)
+			{
+				int red = rand() % 255 + 1;
+				int green = rand() % 255 + 1;
+				int blue = rand() % 255 + 1;
+				
+				std::vector<cv::Point2d > blob = finalBlobs[i];
+				int ttlPnts = blob.size();
+				for (int j = 0; j < ttlPnts; j++)
+				{
+					Point2d p = blob[j];
+					uchar* ptr = foreBinFinal.ptr<uchar>(p.y);
+					ptr[3*(int)p.x] = blue;
+					ptr[3*(int)p.x+1] = green;
+					ptr[3*(int)p.x+2] = red;
+
+				}
+			}
+		}
+				
+		/*
+		Initialize the values of the bins in the height and colour model
+		*/
+		static void initPersonIPS(PersonIPS* p, int id)
+		{
+			p->id = id;
+
+			p->meanIPS = Point(-1,-1);
+			p->covIPS = Mat::zeros(2,2, CV_32F);
+
+			p->mean3D = Mat::zeros(3,1, CV_32F);
+			p->cov3D = Mat::zeros(3,3, CV_32F);
+
+			p->meanMoA = Point(-1,-1);
+			p->covMoA = Mat::zeros(2, 2, CV_32F);
+
+			int red = rand() % 255 + 1;
+			int green = rand() % 255 + 1;
+			int blue = rand() % 255 + 1;
+			p->colour = Scalar(red, green, blue);
+	
+		}
+
+
+
+		static void detectPeople(const XnDepthPixel* dMap, XnPoint3D* b2dD, XnPoint3D* b3d, int ttlBPnts, KinectSensor& kinect, PersonIPS* dtctPpl, int& ttl_dtctPpl, int cam, Mat& foreImg, bool print, int& idP, const Rect& rLeft, const Rect& rRight)
+		{
+			uchar* d_data = (uchar*)foreImg.data;
+			
+			PersonIPS prs;
+			initPersonIPS(&prs, idP);
+
+			double x2d, y2d, xx2d, yy2d, xy2d, d2d;
+			double x3d, y3d, z3d, xx3d, yy3d, zz3d, xy3d, xz3d, yz3d;
+			d2d = x2d = y2d = xx2d = yy2d = xy2d = 0;
+			x3d = y3d = z3d = xx3d = yy3d = zz3d = xy3d = xz3d = yz3d = 0;
+
+			for (int i = 0; i < ttlBPnts; i++)
+			{
+				XnPoint3D p2dD = b2dD[i];
+				XnPoint3D p3d = b3d[i];
+
+				int d = dMap[(int)p2dD.Y*XN_VGA_X_RES + (int)p2dD.X];
+
+				d2d += d;
+				x2d += p2dD.X;
+				y2d += p2dD.Y;
+				xx2d += p2dD.X * p2dD.X;
+				yy2d += p2dD.Y *  p2dD.Y;
+				xy2d += p2dD.X * p2dD.Y;
+
+				x3d += p3d.X; y3d += p3d.Y; z3d += p3d.Z;
+				xx3d += p3d.X * p3d.X;
+				yy3d += p3d.Y * p3d.Y;
+				zz3d += p3d.Z * p3d.Z;
+
+				xy3d += p3d.X * p3d.Y;
+				xz3d += p3d.X * p3d.Z;
+				yz3d += p3d.Y * p3d.Z;
+
+				if (print)
+				{
+					uchar* ptr = d_data + ((int)p2dD.Y)*foreImg.step;
+					ptr[3*(int)p2dD.X] = prs.colour.val[0];
+					ptr[3*(int)p2dD.X + 1] = prs.colour.val[1];
+					ptr[3*(int)p2dD.X + 2] = prs.colour.val[2];
+				}
+			}
+				
+			//Mean 2D
+			prs.meanIPS.x = x2d/ttlBPnts;
+			prs.meanIPS.y = y2d/ttlBPnts;
+			float meanIPSDepth = d2d/ttlBPnts;
+			XnPoint3D meanIPS2dD;
+			meanIPS2dD.X = prs.meanIPS.x;
+			meanIPS2dD.Y = prs.meanIPS.y;
+			meanIPS2dD.Z = meanIPSDepth;
+			XnPoint3D meanIPS3d;
+			kinect.arrayBackProject(&meanIPS2dD, &meanIPS3d, 1);
+			kinect.transformArray(&meanIPS3d, 1);
+
+
+
+			if (cam == 1 && (prs.meanIPS.x < rLeft.width || prs.meanIPS.x > rRight.x))
+				return;
+
+			idP++;
+			//cov 2D
+			double varxx = (xx2d/ttlBPnts) - powf(prs.meanIPS.x,2);
+			double varyy = (yy2d/ttlBPnts) - powf(prs.meanIPS.y,2);
+			double varxy = (xy2d/ttlBPnts) - (prs.meanIPS.x * prs.meanIPS.y);
+			float covIPS[] = {varxx, varxy, varxy, varyy};
+			Mat m = Mat(2,2, CV_32F, covIPS);
+			m.copyTo(prs.covIPS);
+
+			//mean 3D
+			float mean3d[] = {x3d/ttlBPnts, y3d/ttlBPnts, z3d/ttlBPnts};
+			Mat s = Mat(3, 1, CV_32F, mean3d);
+			s.copyTo(prs.mean3D);
+			//cov 3D
+			double varxx3d = (xx3d/ttlBPnts) - powf(mean3d[0], 2);
+			double varyy3d = (yy3d/ttlBPnts) - powf(mean3d[1], 2);
+			double varzz3d = (zz3d/ttlBPnts) - powf(mean3d[2], 2);
+			double varxy3d = (xy3d/ttlBPnts) - (mean3d[0] * mean3d[1]);
+			double varxz3d = (xz3d/ttlBPnts) - (mean3d[0] * mean3d[2]);
+			double varyz3d = (yz3d/ttlBPnts) - (mean3d[1] * mean3d[2]);
+			float cov3D[] = {varxx3d, varxy3d, varxz3d, varxy3d, varyy3d, varyz3d, varxz3d, varyz3d, varzz3d};
+			Mat ss = Mat(3,3, CV_32F, cov3D);
+			ss.copyTo(prs.cov3D);
+
+			Mat rTiltNeg = (Mat)kinect.rotTiltNeg;
+			Mat rTilt = (Mat)kinect.rotTilt;
+			
+			Mat sTilt = s.t() * (Mat)rTiltNeg;
+			
+
+			//Transform into a common CS
+			Mat r = (Mat)kinect.rotation;
+			Mat t = (Mat)kinect.translation;
+			
+			Mat sCCS = r*sTilt.t() + t; //mean
+			Mat sCCST = sCCS.t() * rTilt; //final mean 
+
+			//Cova
+			Mat ssCCS = r.t() * ss * r; // cov
+			//extend Cov
+		//	Mat extCov = Mat::zeros(4,4, CV_32F) + 1;
+		//	Mat mCov =extCov(Rect(0,0, 3,3));
+		//	ssCCS.copyTo(mCov);
+			
+
+			//float covVals[] = {1/ActivityMap_Utils::X_STEP, 0, 0, ActivityMap_Utils::MIN_X, 0, 0, 1/ActivityMap_Utils::Z_STEP, ActivityMap_Utils::MIN_Z};
+			//Mat projMoAMat = Mat(2,4, CV_32F, covVals);
+
+			float covVals[] = {(float)1/ActivityMap_Utils::X_STEP, 0, 0, 0, 0, (float)1/ActivityMap_Utils::Z_STEP};
+			Mat projMoAMat = Mat(2,3, CV_32F, covVals);
+
+			//finalCov: 2x2
+			Mat finalCov = projMoAMat * ssCCS * projMoAMat.t();
+			finalCov.copyTo(prs.covMoA);
+
+
+			//Project into MoA
+			/*XnPoint3D mean3D;
+			mean3D.X = sCCST.ptr<float>(0)[0];
+			mean3D.Y = sCCST.ptr<float>(0)[1];
+			mean3D.Z = sCCST.ptr<float>(0)[2];
+			prs.meanMoA = ActivityMap_Utils::findMoACoordinate(&mean3D, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);*/
+			prs.meanMoA = ActivityMap_Utils::findMoACoordinate(&meanIPS3d, MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+			
+
+			
+
+				
+			dtctPpl[ttl_dtctPpl++] = prs;
+		}
+
+		static void detectPeople(const std::vector < std::vector<cv::Point2d > > &finalBlobs, const XnDepthPixel* dMap, KinectSensor& kinect, PersonIPS* dtctPpl, int& ttl_dtctPpl, int cam)
+		{
+			int ttlBlobs = finalBlobs.size();
+			ttl_dtctPpl = ttlBlobs;
+			for (int i = 0; i < ttlBlobs; i++)
+			{
+				PersonIPS prs;
+				initPersonIPS(&prs, cam*3+i);
+
+				std::vector<cv::Point2d > blob = finalBlobs[i];
+				int ttlPnts = blob.size();
+				XnPoint3D* p2dd = new XnPoint3D[ttlPnts];
+				double x, y, xx, yy, xy;
+				x = y = xx = yy = xy = 0;
+				for (int j = 0; j < ttlPnts; j++)
+				{
+					Point2d p = blob[j];
+					p2dd[j].X = p.x;
+					p2dd[j].Y = p.y;
+					p2dd[j].Z = dMap[(int)p.y*XN_VGA_X_RES + (int)p.x];
+
+					x += (int)p.x;
+					y += (int)p.y;
+					xx += (int)p.x*p.x;
+					yy += (int)p.y*p.y;
+					xy += (int)p.x*p.y;
+				}
+				prs.meanIPS.x = x/ttlPnts;
+				prs.meanIPS.y = y/ttlPnts;
+
+				double varxx = (xx/ttlPnts) - powf(prs.meanIPS.x,2);
+				double varyy = (yy/ttlPnts) - powf(prs.meanIPS.y,2);
+				double varxy = (xy/ttlPnts) - (prs.meanIPS.x * prs.meanIPS.y);
+				float covIPS[] = {varxx, varxy, varxy, varyy};
+				Mat m = Mat(2,2, CV_32F, covIPS);
+				m.copyTo(prs.covIPS);
+				
+				dtctPpl[i] = prs;
+
+				delete [] p2dd;
+			}
+
+		}
+
+		static void displayDetectedPplIPS(const PersonIPS* dtctPpl, const int& ttlDtctPpl, Mat& rgbImg, Mat& MoA)
+		{
+			for (int i = 0; i < ttlDtctPpl; i++)
+			{
+				const PersonIPS* prs = &(dtctPpl[i]);
+
+				char txt[15];
+				itoa(prs->id, txt, 10);
+				
+				//cv::circle(MoA, prs->meanMoA, 2, prs->colour, 2);
+				drawPersonPointsCov_debug(prs->meanIPS, prs->covIPS, &rgbImg, prs->colour, 2, NULL);
+				drawPersonPointsCov_debug(prs->meanMoA, prs->covMoA, &MoA, prs->colour, 2, NULL);
+				
+			}
+
+		}
+
+}

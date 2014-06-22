@@ -1,6 +1,7 @@
 #pragma once
 #include "PplDetection_v1.h"
 #include "PplDetection_v2.h"
+#include "PplDetection_v3.h"
 #include "PplTracker_v1.h"
 #include "PplTracker_v14.h"
 #include "PplTracker_v2.h"
@@ -49,7 +50,8 @@ int main(int argc, char* argv[])
 
 	//PplDetection_v1 pplDetc; //RPS
 	//PplDetection_v2 pplDetc; //MOA
-	//pplDetc.detection(fromVideo, recordOut, tilt, debug);
+	PplDetection_v3 pplDetc; //IPS
+	pplDetc.detection(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
 	//PplTracker_v1 pplTrack;
@@ -60,8 +62,8 @@ int main(int argc, char* argv[])
 	//pplTrack14.trackingMoA(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
-	PplTracker_v2 pplTrack2;
-	pplTrack2.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//PplTracker_v2 pplTrack2;
+	//pplTrack2.trackingMoA(fromVideo, recordOut, tilt, debug);
 	//VLDReportLeaks();
 
 	//To ground truth merge measurements

@@ -1,3 +1,8 @@
+/*
+PEOPLE DETECTOR: MoA
+*/
+
+
 #include "PplDetection_v2.h"
 #include <vld.h>
 
