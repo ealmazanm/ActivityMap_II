@@ -25,6 +25,7 @@ public:
 	~PplTracker_v14(void);
 
 	void trackingMoA(int fromVideo, int recordOut, int tilt, int debug);
+	void generateCalibrationImgs(int fromVideo, int recordOut, int tilt, int debug);
 
 private:
 	void writeTrackingResults(vector<AMv14::TrackInfo>& tracks);

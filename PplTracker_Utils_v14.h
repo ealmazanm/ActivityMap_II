@@ -1,6 +1,6 @@
 #pragma once
 #include <Utils.h>
-#include <vld.h>
+//#include <vld.h>
 #include "hungarian.h"
 #include <tinystr.h>
 #include <tinyxml.h>
@@ -11,11 +11,11 @@ namespace AMv14
 		static const int DA_TYPE_NN = 0;
 		static const int DA_TYPE_SNN = 1;
 		static const int DA_TYPE_GNN = 2;
-		static const int DA_TYPE = DA_TYPE_SNN;
+		static const int DA_TYPE = DA_TYPE_GNN;
 
 		static const int DA_FEAT_SPATIAL = 0;
 		static const int DA_FEAT_APPEARANCE = 1;
-		static const int DA_FEATURE = DA_FEAT_SPATIAL;
+		static const int DA_FEATURE = DA_FEAT_APPEARANCE;
 
 		static const float UPDATE_RATE = 0;
 
@@ -385,6 +385,91 @@ namespace AMv14
 			outDebugFile << "Lost: " << p->lost << ". Lost threshold: " << TRACKLOST_THRESHOLD << endl;
 			outDebugFile << "*****************************************" << endl;
 		}
+
+				
+		static Point projectSingleMoA (const XnPoint3D* p3D)
+		{
+			Point out = Point(-1,-1);
+			if (p3D->X > -5390 && p3D->X < 5390 && p3D->Z < 9700 && p3D->Y < 4050)
+			{
+				out.x = ((p3D->X-(-5390))/21 + 0.5);
+				out.y = 450 - (int)((p3D->Z - 500)/21 + 0.5); //round to the nearest integer
+				//out.y = (Y_RES - 1) - floor(((p->Z-MIN_Z)/Z_STEP));
+			}
+			return out;
+		}
+
+		static void buildSinglePlanView(Mat& singleMoA, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap, Mat& heightMap)
+		{
+			for (int i = 0; i < nP; i++)
+			{
+				Point p2D = projectSingleMoA(&p3D[i]);
+					
+				if (p2D.x != -1)
+				{
+					if (p2D.y >= 450)
+						p2D.y = 449;
+
+					float height = heightMap.ptr<float>(p2D.y)[p2D.x];
+					if (p3D[i].Y > height)
+					{
+						XnPoint3D origP2D = points2D[i];
+						heightMap.ptr<float>(p2D.y)[p2D.x] = p3D[i].Y;
+						const XnRGB24Pixel c = rgbMap[(int)origP2D.Y*XN_VGA_X_RES+(int)origP2D.X];
+
+						uchar* ptr = singleMoA.ptr<uchar>(p2D.y);
+						//uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
+
+						ptr[3*p2D.x] = c.nBlue;
+						ptr[3*p2D.x+1] = c.nGreen;
+						ptr[3*p2D.x+2] = c.nRed;
+
+					}
+				}
+			}
+
+		}
+		
+		static void updateActivityMapColor(Mat& activityMap, const XnPoint3D* p3D, const int nP, const XnPoint3D* points2D, const XnRGB24Pixel* rgbMap, Mat& heightMap)
+		{
+			for (int i = 0; i < nP; i++)
+			{
+				Point p2D = ActivityMap_Utils::findMoACoordinate(&p3D[i], MAX_RANGE, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT);
+
+				if (p2D.x != -1)
+				{
+					if (p2D.y >= 480)
+						p2D.y = 479;
+
+					float height = heightMap.ptr<float>(p2D.y)[p2D.x];
+					if (p3D[i].Y > height)
+					{
+						XnPoint3D origP2D = points2D[i];
+						heightMap.ptr<float>(p2D.y)[p2D.x] = p3D[i].Y;
+						const XnRGB24Pixel c = rgbMap[(int)origP2D.Y*XN_VGA_X_RES+(int)origP2D.X];
+
+						uchar* ptr = activityMap.ptr<uchar>(p2D.y);
+						//uchar* ptr_back = activityMap_back.ptr<uchar>(p2D.y);
+
+						ptr[3*p2D.x] = c.nBlue;
+						ptr[3*p2D.x+1] = c.nGreen;
+						ptr[3*p2D.x+2] = c.nRed;
+
+						//ptr[3*p2D.x]  = 0;
+						//ptr[3*p2D.x+1] = 0;
+						//ptr[3*p2D.x+2] = 0;
+					}
+				}
+				//else
+				//{
+				//	if (debug > DEBUG_NONE)
+				//		outDebugFile << "UpdateActivityMap: BAD PROJECTION (MoA). Info: 3DPoint: " << p3D[i].X <<", "<< p3D[i].Y << ", " << p3D[i].Z <<
+				//		"MAX_RANGE: " << MAX_RANGE << ". MAX_Z_TRANS: " << ActivityMap_Utils::MAX_Z_TRANS << ". CEILING_THRESH: " << ActivityMap_Utils::CEILING_THRESHOLD <<
+				//		". FLOOR_THRESHOLD: " << ActivityMap_Utils::FLOOR_THRESHOLD << endl;
+				//}
+			}
+		}
+
 
 		/*
 		activityMap(out): Updates the positions where the 3D points project.
@@ -3266,6 +3351,96 @@ namespace AMv14
 					tracks[--iter].trajectory.push_back(pos);
 			}
 		}
+
+		static void buildListPoints(XnPoint3D* &points2D, int& np, const XnDepthPixel* dMap)
+		{
+			np = 0;
+			for (int i = 0; i < XN_VGA_Y_RES; i++)
+			{
+				for (int j = 0; j < XN_VGA_X_RES; j++)
+				{
+					int v = dMap[i*XN_VGA_X_RES + j];
+					if (v != 0)
+					{
+						points2D[np].X = j;
+						points2D[np].Y = i;
+						points2D[np].Z = v;
+						np++;
+					}
+				}
+			}
+		}
+
+		static void filterPoints(XnPoint3D* &points2D, XnPoint3D* &points3D, int& nP, XnPoint3D* &points2DNew, XnPoint3D* &points3DNew, int& nPNew)
+		{
+			nPNew = 0;
+			for (int i = 0; i < nP; i++)
+			{
+				XnPoint3D p3D = points3D[i];
+				if (p3D.Y > (-2300) && p3D.Y < 0)
+				{
+					points3DNew[nPNew] = p3D;
+					points2DNew[nPNew] = points2D[i];
+					nPNew++;
+				}
+			}
+		}
+
+		static Mat aggregateRGB(const Mat* im1, const Mat* im2, const Mat* im3)
+		{
+			Mat out = Mat::zeros(Size(XN_VGA_X_RES*3 + 15, XN_VGA_Y_RES), CV_8UC3);
+			Utils::initMat3u(out, 255);
+
+			const Mat* imgs[] = {im1, im2, im3};
+
+			for (int i = 0; i < 3; i++)
+			{
+				Rect r = Rect(im1->cols*i + 5*(i+1), 0, im1->cols, im1->rows);
+				Mat outRoi = out(r);
+				imgs[i]->copyTo(outRoi);
+			}
+			return out;
+		}
+
+		static Mat aggregateAll(const Mat* im1, const Mat* im2, const Mat* im3, const Mat* moa)
+		{
+			int width = moa->cols/3;
+			int height = im1->rows*width/im1->cols;
+			Size szIm = Size(width, height);
+
+			Mat im1Rsz, im2Rsz, im3Rsz;
+			resize((*im1), im1Rsz, szIm);
+			resize((*im2), im2Rsz, szIm);
+			resize((*im3), im3Rsz, szIm);
+
+			Mat imgs[] = {im1Rsz,im2Rsz, im3Rsz};
+
+			Size fnalSz = Size(moa->cols, moa->rows+height);
+			Mat out = Mat(fnalSz, CV_8UC3);
+
+			for (int i = 0; i < 3; i++)
+			{
+				Rect r = Rect(szIm.width*i,0, szIm.width, szIm.height);
+				Mat outRoi = out(r);
+				imgs[i].copyTo(outRoi);
+			}
+
+			Rect r = Rect(0,szIm.height, moa->cols, moa->rows);
+			Mat outRoi = out(r);
+			moa->copyTo(outRoi);
+
+			line(out, Point(0, height), Point(moa->cols,height), Scalar::all(0), 2);
+
+			for (int i = 0; i < 3; i++)
+			{
+				line(out, Point(i*width,0), Point(i*width, height), Scalar::all(0), 2);
+			}
+
+			return out;
+
+		}
+
+
 
 }
 

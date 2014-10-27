@@ -4,7 +4,7 @@ PEOPLE DETECTION: IMAGE PLANE
 */
 
 #include "PplDetection_v3.h"
-#include <vld.h>
+//#include <vld.h>
 
 
 

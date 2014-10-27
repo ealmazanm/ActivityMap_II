@@ -7,7 +7,7 @@
 #include "PplTracker_v2.h"
 #include "MergeMeasurement_GT.h"
 #include "visualizeGT.h"
-#include <vld.h>
+//#include <vld.h> (Visual leak detector)
 
 /*
 Arg 1: 0:Video; 1:live
@@ -50,16 +50,17 @@ int main(int argc, char* argv[])
 
 	//PplDetection_v1 pplDetc; //RPS
 	//PplDetection_v2 pplDetc; //MOA
-	PplDetection_v3 pplDetc; //IPS
-	pplDetc.detection(fromVideo, recordOut, tilt, debug);
+	//PplDetection_v3 pplDetc; //IPS
+	//pplDetc.detection(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
 	//PplTracker_v1 pplTrack;
 	//pplTrack.trackingMoA(fromVideo, recordOut, tilt, debug);
 	//VLDReportLeaks();
 
-	//PplTracker_v14 pplTrack14;
-	//pplTrack14.trackingMoA(fromVideo, recordOut, tilt, debug);
+	PplTracker_v14 pplTrack14;
+	pplTrack14.trackingMoA(fromVideo, recordOut, tilt, debug);
+	//pplTrack14.generateCalibrationImgs(fromVideo, recordOut, tilt, debug);
 
 	//VLDEnable();
 	//PplTracker_v2 pplTrack2;

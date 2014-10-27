@@ -1,6 +1,6 @@
 #pragma once
 #include <Utils.h>
-#include <vld.h>
+//#include <vld.h>
 #include "hungarian.h"
 #include <tinystr.h>
 #include <tinyxml.h>
@@ -516,7 +516,7 @@ namespace PplDtcV1
 				int *row = lbl_data + y*lbl_step;
 				for(int x=0; x < lbl_Cols; x++) 
 				{
-					if(row[x] == 0) 
+					if(row[x] != 0) 
 					{
 						continue;
 					}
@@ -669,6 +669,11 @@ namespace PplDtcV1
 
 			p->stateMoA = Mat::zeros(4,1, CV_32F);
 			p->covMoA_points = Mat::zeros(2,2,CV_32F);
+						
+			int red = rand() % 255 + 1;
+			int green = rand() % 255 + 1;
+			int blue = rand() % 255 + 1;
+			p->colour = Scalar(red, green, blue);
 	
 		}
 
@@ -764,10 +769,80 @@ namespace PplDtcV1
 		}
 
 
+				static void enhanceImg(Mat& mGray, Mat& mEnhance, bool type)
+		{
+			int decrease = 140;
+			if (type)
+				decrease = 255;
+
+			int ttlCols = mGray.cols;
+			int ttlRows = mGray.rows;
+
+			uchar* grayData = mGray.data;
+			int grayStp = mGray.step;
+
+			uchar* enhData = mEnhance.data;
+			int enhStp = mEnhance.step;
+
+			int rr, gg, bb;
+			for (int r = 0; r < ttlRows; r++)
+			{
+				uchar* ptrGray = grayData + r*grayStp;
+				uchar* ptrEnh = enhData + r*enhStp;
+
+				for (int c = 0; c < ttlCols; c++)
+				{
+					int gray = ptrGray[c];
+					if (gray < 254)
+					{
+						//int newGray = computeNewValue(r, gray);
+
+						int newGray = gray - decrease;
+
+						ptrEnh[c] = max(0, newGray);
+					}
+
+				}
+			}
+
+		}
+
+				
+		static void normalizeRPS(const Mat* src, Mat& out)
+		{
+			double max = 30000;
+			//minMaxIdx(*src, NULL, &max);
+			if (max != 0)
+			{
+				src->convertTo(out, CV_8UC1, 254/max);
+			
+				subtract(cv::Scalar::all(254),out, out);
+
+				for (int r = 0; r < src->rows; r++)
+				{
+					const ushort* ptrSrc = src->ptr<ushort>(r);
+					uchar* ptrOut = out.ptr<uchar>(r);
+
+					for (int c = 0; c < src->cols; c++)
+					{
+						if (ptrSrc[c] == 0)
+							ptrOut[c] = 255;
+					}
+				}
+
+			}
+			else
+			{
+				out = Mat::zeros(out.size(), CV_8UC1) + 255;
+				//Utils::initMat1u(out, 255);
+			}
+		}
+
 
 		//Detect people blobs using an hysteresis threshold and a component labelling (on the RMPSpace)
 		static void detectCC(Mat& bw, Person* dtctPpl, int& ttl_dtctPpl, vector<PointMapping>* pntsMap2, int ttlPnts, Mat& debugImg, int debug, int frames, int debugFrame, bool isRPS)
 		{
+			Mat outImgDebugAccum = Mat::zeros(bw.size(), CV_16UC1);
 			Mat imgCpy = Mat(bw.size(), CV_8UC1);
 			Mat cpy = Mat(bw.size(), CV_8UC1);
 			Utils::convert16to8(&bw, imgCpy); //convert the image to a range between 0-255. And also inverts the values, so 0 belongs to high values in viceversa
@@ -923,11 +998,43 @@ namespace PplDtcV1
 							projectLocation2MoA(prs, debug, frames, debugFrame);
 							totalSubIntervalsDetection[PROJECT2MOA_ID] += clock() - startTime;
 						}
+
+						if (debug >= DEBUG_NONE && frames == 358)
+						{
+							//outImgDebugAccum
+
+							for (int i = 0; i < maxI; i++)
+							{
+								Point2d p = b[i];
+								outImgDebugAccum.ptr<ushort>(p.y)[(int)p.x] = bw.ptr<ushort>(p.y)[(int)p.x];
+							}
+
+						}
 					}
 				}
 				iter++;
 			}
+
+			if (debug >= DEBUG_HIGH && frames == 358)
+			{
+							
+				Mat rpsSmoothGray;
+				normalizeRPS(&outImgDebugAccum, rpsSmoothGray);
+				
+				Mat rpsSmoothGrayEnhanc = Mat (outImgDebugAccum.size(), CV_8UC1) + 255;
+				enhanceImg(rpsSmoothGray, rpsSmoothGrayEnhanc, false);
+				
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\rpsSmooth3.jpg", rpsSmoothGrayEnhanc);
+				imshow("3", rpsSmoothGrayEnhanc);
+				waitKey(0);
+			}
+
 		}
+
+
+				
+
+
 
 		/*
 		img : Mat(500,181, CV_16UC1)
@@ -1003,6 +1110,22 @@ namespace PplDtcV1
 
 				}
 			}
+
+			if (debug >= DEBUG_HIGH && frames == 358)
+			{
+				Mat rpsSmoothGray;
+				normalizeRPS(&img, rpsSmoothGray);
+				
+				Mat rpsSmoothGrayEnhanc = Mat (img.size(), CV_8UC1) + 255;
+				enhanceImg(rpsSmoothGray, rpsSmoothGrayEnhanc, false);
+					
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\rpsSmooth2.jpg", rpsSmoothGrayEnhanc);
+				imshow("2", rpsSmoothGrayEnhanc);
+				waitKey(0);
+
+			}
+
+
 			img.copyTo(imgCpy2);
 			totalSubIntervalsDetection[FIRSTTHRES_ID] += clock() - startTime; //time debugging
 
@@ -1184,18 +1307,16 @@ namespace PplDtcV1
 			{
 				const Person* p = &(dtctPpl[iter]);
 					
-				Scalar color = Scalar(255,0,0);
+				//Scalar color = Scalar(255,0,0);
 				
 				if (debug >= DEBUG_NONE)
 				{
-					cv::circle(remapPolar, p->mean_RPS, 2, Scalar::all(0), -1);
-					cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, Scalar::all(0));
+					//cv::circle(remapPolar, p->mean_RPS, 2, p->colour, -1);
+					cv::ellipse(remapPolar, p->mean_RPS, Size(p->sigmaX_RPS*2, p->sigmaY_RPS*2), 0,0,360, p->colour, 2);
 				}
 
 				Point meanMoA = Point(p->stateMoA.at<float>(0,0), p->stateMoA.at<float>(1,0));
-
-				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, Scalar::all(0), 1, NULL);
-
+				drawPersonPointsCov_debug(meanMoA, p->covMoA_points, &moa, p->colour, 2, NULL);
 			}
 		}
 		static void displayTrackersRPS(Person* trckPpl, int ttl_trckPpl, Mat& remapPolar,int debug)
@@ -1285,24 +1406,59 @@ namespace PplDtcV1
 			}
 		}
 
-
-		static void normalizeRPS(const Mat* src, Mat& out)
+		static void findHeatColourII(int alpha, int* r, int* g, int* b)
 		{
-			double max = 30000;
-			//minMaxIdx(*src, NULL, &max);
-			if (max != 0)
-			{
-				src->convertTo(out, CV_8UC1, 255/max);
-			
-				subtract(cv::Scalar::all(255),out, out);
-
+			//128
+			if (alpha < 128) {
+				*r = 0;
+				*g = 0 + 2*alpha;
+				*b = 255 - 2 * alpha;
 			}
 			else
 			{
-				out = Mat::zeros(out.size(), CV_8UC1) + 255;
-				//Utils::initMat1u(out, 255);
+				*r = 0 + 2*alpha;
+				*g = 255 - 2 * alpha;
+				*b = 0;
 			}
 		}
+
+
+		static void convertGrayToHeat(Mat& mGray, Mat& mHeat)
+		{
+			int ttlCols = mGray.cols;
+			int ttlRows = mGray.rows;
+
+			uchar* grayData = mGray.data;
+			int grayStp = mGray.step;
+
+			uchar* heatData = mHeat.data;
+			int heatStp = mHeat.step;
+
+			int rr, gg, bb;
+			for (int r = 0; r < ttlRows; r++)
+			{
+				uchar* ptrGray = grayData + r*grayStp;
+				uchar* ptrHeat = heatData + r*heatStp;
+
+				for (int c = 0; c < ttlCols; c++)
+				{
+					int gray = ptrGray[c];
+					if (gray == 255)
+					{
+						rr = gg = bb = 255;
+					}
+					else
+						findHeatColourII(gray, &rr, &gg, &bb);
+
+					ptrHeat[c*3] = rr;
+					ptrHeat[c*3+1] = gg;
+					ptrHeat[c*3+2] = bb;
+
+				}
+			}
+
+		}
+
 
 
 		static Mat createForegroundImage(XnPoint3D* p2D, int ttlPnts)

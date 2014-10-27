@@ -1,5 +1,5 @@
 #include "PplTracker_v2.h"
-#include <vld.h>
+//#include <vld.h>
 
 //Meanshift tracker
 PplTracker_v2::PplTracker_v2(void)
@@ -263,6 +263,15 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 
 				}	
 
+				if (debug >= DEBUG_HIGH && frames == 509)
+				{
+					Mat moaCpy;
+					activityMap->copyTo(moaCpy);
+					imshow("Debug MoA", moaCpy);
+					waitKey(0);
+					imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter6\\imgs\\fail\\moa_298_original.jpg", moaCpy);
+				}
+
 				getMoA2DPoints(points3D, moa2DPoint, numberOfForegroundPoints);
 
 				//if (frames == 411)
@@ -276,6 +285,10 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 					//for debug
 					Mat MoACopy;
 					activityMap->copyTo(MoACopy);
+
+
+					char* common = "c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter6\\imgs\\fail\\moa_trgt_";
+				
 					for (int i = 0; i < ttl_trckPpl; i++)
 					{
 						Person* trgt = &(trckPpl[i]);
@@ -286,27 +299,43 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 						totalIntervals[PROBMAP_ID] += clock() - startTime_tmp; //time debugging
 				
 						//DEBUG: Shows the actual performance of camshift
-						if (debug >= DEBUG_HIGH && frames > 200)//( (frames >= 300 && trgt->id == 6) || (frames >= 300 && trgt->id == 8) ) )
+						if (debug >= DEBUG_HIGH && frames == 509)//( (frames >= 300 && trgt->id == 6) || (frames >= 300 && trgt->id == 8) ) )
 						{
-							Mat mImg = Mat::zeros(activityMap->size(), CV_8UC1);
-							Utils::convert16to8(&MoAp, mImg);
-							Rect r = getUncertainArea(trgt->rrMoA.boundingRect(), MoAp.size(), 0.25);
+							//Capture Map of Activity
+							char path[150];
+							strcpy(path, common);
+							char IDStr[15];
+							itoa(trgt->id, IDStr, 10);
+							strcat(path, IDStr);
+							strcat(path, ".jpg");
+				
+
+							//Mat mImg = Mat::zeros(activityMap->size(), CV_8UC1);
+							//Utils::convert16to8(&MoAp, mImg);
+							//Rect r = getUncertainArea(trgt->rrMoA.boundingRect(), MoAp.size(), 0.25);
 						
-								outDebugFile << "**********Target " << i << ". Frame: " << frames << endl;
+								/*outDebugFile << "**********Target " << i << ". Frame: " << frames << endl;
 								float maxProb, ttlProb;
 								maxProb = ttlProb = 0;
 								getProbs(maxProb, ttlProb, MoAp, r);
-								outDebugFile << "TtlProb: " << ttlProb << ". MaxProb: " << maxProb << endl;
+								outDebugFile << "TtlProb: " << ttlProb << ". MaxProb: " << maxProb << endl;*/
 						
 							//rectangle(*activityMap, r, Scalar::all(0), 2);
-							rectangle(mImg, r, Scalar::all(0), 2);
-							imshow("Img", mImg);
+							//rectangle(mImg, r, Scalar::all(0), 2);
+							//imshow("Img", mImg);
 							//imshow("...", *activityMap);
-							waitKey(0);
+							//waitKey(0);
 							camShift_custom(trgt, MoAp, term);
-							rectangle(mImg, trgt->rrMoA.boundingRect(), Scalar::all(0), 2);
-							imshow("Img", mImg);
+							//rectangle(mImg, trgt->rrMoA.boundingRect(), Scalar::all(0), 2);
+												
+							Mat m = (*activityMap)(trgt->rrMoA.boundingRect());
+							Utils::initMat3u(m, 255);
+							char txt[15];
+							itoa(trgt->id, txt, 10);
+							drawPersonPointsCov_debug(trgt->rrMoA, activityMap, trgt->colour, 2,txt);
+							imshow("Debug MoA", *activityMap);
 							waitKey(0);
+							imwrite(path, *activityMap);
 						}
 						//else
 						{
@@ -338,7 +367,7 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 							//updateMShiftModel(trgt);
 						}
 						//show MoaCopy
-						if (debug >= DEBUG_NONE && waitTime == 0)
+						if (debug >= DEBUG_HIGH && waitTime == 0)
 						{
 							displayTrackersMoA(trgt, 1, MoACopy, debug, frames);
 							imshow("MoACopy", MoACopy);
@@ -350,7 +379,7 @@ void PplTracker_v2::trackingMoA(int fromVideo, int recordOut, int tilt, int debu
 						cleanPointsTarget(trgt, moa2DPoint, activePoints, numberOfForegroundPoints, activityMap->size(), MoAp, MoACopy, debug); //Take out of debug after
 						totalIntervals[CLEAN_ID] += clock() - startTime_tmp; //time debugging
 
-						if (debug >= DEBUG_NONE && waitTime == 0)
+						if (debug >= DEBUG_HIGH && waitTime == 0)
 						{
 							imshow("MoACopy", MoACopy);
 							waitKey(0);

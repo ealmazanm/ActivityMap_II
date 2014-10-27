@@ -1,5 +1,5 @@
 #include "PplDetection_v1.h"
-#include <vld.h>
+//#include <vld.h>
 
 
 PplDetection_v1::PplDetection_v1(void)
@@ -119,7 +119,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	
 	Mat *activityMap, *activityMap_Back;
 	Mat whiteBack, colorMap;
-	Mat background = Mat(actMapCreator.getResolution(), CV_8UC1);
+	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
 	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
 
 	//flags
@@ -159,6 +159,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	Mat polarAlt_smooth= Mat(RANGE_ROWS,181, CV_16UC1);
 	Mat polarAlt_ = Mat(RANGE_ROWS, 181, CV_8UC1);
 	Mat polarAlt_smooth_ = Mat(RANGE_ROWS, 181, CV_8UC1);
+	Mat polarAlt_smooth_rgb = Mat(RANGE_ROWS, 181, CV_8UC3);
 	Mat polar_ = Mat(RANGE_ROWS, 181, CV_8UC1);
 	Mat m = Mat(polarAlt_smooth_.size(), CV_8UC3);
 	Mat* outMoA;
@@ -178,6 +179,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 
 	//Size of kernel: smooth rps;
 	Mat kernel = Mat::ones(Size(5,27), CV_32F);
+	//Mat kernel = Mat::ones(Size(5,10), CV_32F);
 
 	char* nWindows[NUM_SENSORS];
 	nWindows[0] =  "rgb 0";
@@ -243,9 +245,10 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		{
 			if (first)
 			{
-				whiteBack = Mat::zeros(actMapCreator.getResolution(), CV_8UC1) + 255;
-				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC1);
-				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC1);
+				whiteBack = Mat::zeros(actMapCreator.getResolution(), CV_8UC3);
+				activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
+				Utils::initMat3u(whiteBack, 255);
 				first = false;
 			}
 			whiteBack.copyTo(*activityMap);
@@ -295,16 +298,17 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 					if (debug >= DEBUG_NONE)
 					{
 						startTime_tmp = clock();
-						updateActivityMap(acMoA, points3D[i], numberOfForegroundPoints[i]);
+						updateActivityMapII(*activityMap, *activityMap_Back, &actMapCreator, points3D[i], numberOfForegroundPoints[i], pointsFore2D[i]);
+						//updateActivityMap(acMoA, points3D[i], numberOfForegroundPoints[i]);
 						totalIntervals[MOA_ID] += clock() - startTime_tmp; //time debugging
-						if (i == 2)
+						/*if (i == 2)
 						{
 							Utils::convert16to8(&acMoA, *activityMap);
 							Utils::convert16to8(&acMoA, *activityMap_Back);
 
 							threshold(*activityMap, *activityMap, 254, 255, THRESH_BINARY);
 
-						}
+						}*/
 					}
 					
 				}
@@ -314,10 +318,55 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 				cv::filter2D(polarAlt, polarAlt_smooth, -1, kernel);
 				totalIntervals[SMOOTH_ID] += clock() - startTime_tmp; //time debugging
 
+				if (debug >= DEBUG_HIGH && frames == 358)
+				{
+					Mat rpsSmoothGray;
+					Mat rpsGray;
+					normalizeRPS(&polarAlt_smooth, rpsSmoothGray);
+					//normalizeRPS(&polarAlt, rpsGray);
+					//Utils::convert16to8(&polarAlt_smooth, rpsSmoothGray);
+					Utils::convert16to8(&polarAlt, rpsGray);
+					Mat rpsSmoothGrayEnhanc = Mat (polarAlt_smooth.size(), CV_8UC1) + 255;
+					Mat rpsGrayEnhanc = Mat (polarAlt_smooth.size(), CV_8UC1) + 255;
+					enhanceImg(rpsSmoothGray, rpsSmoothGrayEnhanc, false);
+					enhanceImg(rpsGray, rpsGrayEnhanc, true);
+					
+					/*Mat rpsSmoothHeat = Mat (polarAlt_smooth.size(), CV_8UC3);
+					Mat rpsHeat = Mat (polarAlt_smooth.size(), CV_8UC3);
+					convertGrayToHeat(rpsSmoothGray, rpsSmoothHeat);
+					convertGrayToHeat(rpsGray, rpsHeat);*/
+
+					//imshow("RPS_gray", rpsGray);
+					imshow("0", rpsGrayEnhanc);
+					//imshow("RPS_Smooth_gray", rpsSmoothGray);
+					imshow("1", rpsSmoothGrayEnhanc);
+
+					imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\rps0.jpg", rpsGrayEnhanc);
+					imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\rpsSmooth1.jpg", rpsSmoothGrayEnhanc);
+					waitKey(0);
+					
+				}
+
 				
 				startTime_tmp = clock();
 				ccDetection(polarAlt_smooth, dtctPpl, ttl_dtctPpl, pntsMap2, ttlPnts, debug, frames, debugFrame, true); //Connected component detection
 				totalIntervals[DET_ID] += clock() - startTime_tmp; //time debugging
+
+				if (debug >= DEBUG_HIGH && frames == 358)
+				{
+					Mat rpsSmoothGrayII;
+					//Utils::convert16to8(&polarAlt_smooth, rpsSmoothGrayII);
+					normalizeRPS(&polarAlt_smooth, rpsSmoothGrayII);
+					Mat rpsSmoothHeat = Mat (polarAlt_smooth.size(), CV_8UC3);
+					convertGrayToHeat(rpsSmoothGrayII, rpsSmoothHeat);
+
+					imshow("iiRPS_Smooth_gray", rpsSmoothGrayII);
+					imshow("IIRPS_Smooth_heat", rpsSmoothHeat);
+
+					imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\HeatAfterThrs.jpg", rpsSmoothHeat);
+					waitKey(0);
+					
+				}
 
 				if (debug >= DEBUG_HIGH)
 				{
@@ -335,7 +384,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 				generateTrackHistory(tracks, dtctPpl, ttl_dtctPpl, frames);				
 
 				//For display purposes
-				if (debug >= DEBUG_NONE)
+				if (debug >= DEBUG_HIGH)
 				{
 					normalizeRPS(&polarAlt_smooth, polarAlt_smooth_);
 					//Utils::convert16to8(&polarAlt_smooth, polarAlt_smooth_);
@@ -362,7 +411,13 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 					tmp = activityMap_Back;
 							
 				startTime_tmp = clock();
-				//displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_, *tmp, debug);
+				if (debug >= DEBUG_HIGH)
+				{
+					normalizeRPS(&polarAlt_smooth, polarAlt_smooth_);
+					threshold(polarAlt_smooth_,polarAlt_smooth_, 254, 255, CV_THRESH_BINARY);
+					cvtColor(polarAlt_smooth_, polarAlt_smooth_rgb, CV_GRAY2RGB);
+					displayDetections(dtctPpl, ttl_dtctPpl, polarAlt_smooth_rgb, *tmp, debug);
+				}
 				totalIntervals[DISPLAY_ID] += clock() - startTime_tmp; //time debugging
 				
 
@@ -398,11 +453,12 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 		}
 		imshow(windMoA, *outMoA);
 
-		if (debug >= DEBUG_HIGH)
+		if (debug >= DEBUG_NONE)
 		{
 			imshow(nWindows[0], rgbImages[0]);
 			imshow(nWindows[1], rgbImages[1]);
 			imshow(nWindows[2], rgbImages[2]);
+			//imshow("RPS", polarAlt_smooth_rgb);
 		}
 	
 		//if (frames == 230)
@@ -425,10 +481,18 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS.jpg", polarAlt_);
 
 			//RPS vs RPS smoothed
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS_smpooth.jpg", polarAlt_smooth_);
-			imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS.jpg", polarAlt_);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS_smpooth.jpg", polarAlt_smooth_);
+			//imwrite("d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/captures/RPS.jpg", polarAlt_);
 			
 
+		}
+		else if (c == 99) // c
+		{
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter7\\imgs\\RGB_0.jpg", rgbImages[0]);
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter7\\imgs\\RGB_1.jpg", rgbImages[1]);
+			imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter7\\imgs\\RGB_2.jpg", rgbImages[2]);
+			//imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\MoA_ellipses.jpg", *outMoA);
+			//imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter4\\imgs\\RPS_seg\\RPS_ellipses.jpg", polarAlt_smooth_rgb);
 		}
 		else if (c == 27)
 			bShouldStop = true;
@@ -445,7 +509,7 @@ void PplDetection_v1::detection(int fromVideo, int recordOut, int tilt, int debu
 	delete activityMap;
 	delete activityMap_Back;
 
-	writeTrackingResults(tracks);
+	//writeTrackingResults(tracks);
 
 
 	totalIntervals[TOT_ID] = clock() - startTotalTime;

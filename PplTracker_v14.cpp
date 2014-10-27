@@ -1,5 +1,5 @@
 #include "PplTracker_v14.h"
-#include <vld.h>
+//#include <vld.h>
 
 
 PplTracker_v14::PplTracker_v14(void)
@@ -157,7 +157,9 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 	
 	int waitTime = 1;
 
-	
+	VideoWriter wAggre("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\AggregatedMoARGB.avi",CV_FOURCC('M','J','P','G'), 10.0, Size(1149, 767), true);
+	VideoWriter wAggreRGB("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\AggregatedRGB.avi", CV_FOURCC('M','J', 'P', 'G'), 10.0, Size(XN_VGA_X_RES*3 + 15, XN_VGA_Y_RES), true);
+	//wAggre.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\AggregatedMoARGB.avi", CV_FOURCC('P','I','M','1'), 20.0, Size(767,1149), true);
 	VideoWriter w, w1;
 	//w1.open("d:\\Emilio\\Tracking\\DataSet\\sb125\\SecondDay\\DSet1\\MoA_tracking_V14_SNN_APP.mpg",CV_FOURCC('P','I','M','1'), 20.0, actMapCreator.getResolution(), true);
 	recordOut = 0;
@@ -343,10 +345,10 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 				totalIntervals[TRACK_ID] += clock() - startTime_tmp; //time debugging
 
 				//generate tracks history
-				generateTrackHistory(tracks, trckPpl, ttl_trckPpl, frames);				
+				//generateTrackHistory(tracks, trckPpl, ttl_trckPpl, frames);				
 
 				//For display purposes
-				if (debug >= DEBUG_MED)
+				if (debug >= DEBUG_HIGH)
 				{
 					Utils::convert16to8(&polarAlt_smooth, polarAlt_smooth_);
 					Utils::convert16to8(&polarAlt, polarAlt_);
@@ -361,7 +363,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 					tmp = activityMap_Back;
 				
 
-				if (debug >= DEBUG_MED && ttl_trckPpl > 0)
+				if (debug >= DEBUG_HIGH && ttl_trckPpl > 0)
 				{
 					Person* prs =  &trckPpl[0];
 					int c = 1;
@@ -448,6 +450,18 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 		imshow(windMoA, *outMoA);
 
 		if (debug >= DEBUG_NONE)
+		{
+			Mat aggrRGB = aggregateRGB(&rgbImages[0], &rgbImages[1], &rgbImages[2]);
+			wAggreRGB << aggrRGB;
+			Mat aggr = aggregateAll(&rgbImages[0], &rgbImages[1], &rgbImages[2], outMoA);
+			if (frames > 250 && frames < 850)
+				wAggre << aggr;
+			imshow("aggregated", aggr);
+			imshow("AggregatedRGB", aggrRGB);
+
+		}
+
+		if (debug >= DEBUG_HIGH)
 		{
 			//imshow("Polar Alt", polar_);
 			//imshow("Polar Alt Smooth_", polarAlt_smooth_);
@@ -690,7 +704,7 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 	delete activityMap;
 	delete activityMap_Back;
 
-	writeTrackingResults(tracks);
+	//writeTrackingResults(tracks);
 
 	////write on files the tracks for posterior evaluation
 	//char* path = "c:/Dropbox/PhD/Matlab/TrackingEval/CLEAT-MOT-script/ST/st";
@@ -777,4 +791,217 @@ void PplTracker_v14::trackingMoA(int fromVideo, int recordOut, int tilt, int deb
 		kinects[i].stopDevice();
   		kinects[i].shutDown();
 	}
+}
+
+void PplTracker_v14::generateCalibrationImgs(int fromVideo, int recordOut, int tilt, int debug)
+{
+	char* paths[3];
+	paths[0] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/kinect0_calib.oni";
+	paths[1] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/kinect1_calib.oni";
+	paths[2] = "d:/Emilio/Tracking/DataSet/sb125/SecondDay/DSet1/kinect2_calib.oni";
+
+	//Initialize resolutions MoA and Remap Polar space
+	ActivityMap_Utils actMapCreator(DEPTH_SCALE, NUM_SENSORS);
+
+
+	KinectSensor kinects[NUM_SENSORS];
+	const XnDepthPixel* depthMaps[NUM_SENSORS];
+	const XnRGB24Pixel* rgbMaps[NUM_SENSORS];
+
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		if (fromVideo == 0)
+			kinects[i].initDevice(i, REF_CAM, true, paths[i]);
+		else
+			kinects[i].initDevice(i, REF_CAM, true);
+
+		kinects[i].startDevice();
+		kinects[i].tilt(tilt);
+	}
+
+
+	KINECTS_DISPLACEMENT = max(abs(kinects[0].translation(0)), abs(kinects[2].translation(0))); //MAXIMUM TRANSLATION IN THE HORIZONTAL AXIS
+	MAX_RANGE = ActivityMap_Utils::MAX_Z_TRANS + KINECTS_DISPLACEMENT; 
+
+	//namedWindow(windMoA);
+	Mat *activityMap, *activityMap_Back;
+	Mat whiteBack, whitBackSingle, colorMap;
+	Mat background = Mat(actMapCreator.getResolution(), CV_8UC3);
+	Mat backgroundPolar = Mat(actMapCreator.getResolution().height+150, 181, CV_8UC3);
+	Mat heightMap = Mat::zeros(actMapCreator.getResolution(), CV_32FC1);
+
+	//flags
+	bool bShouldStop = false;
+	bool trans = true;
+	bool bgComplete = true;
+	bool deleteBG = true;
+
+	Mat depthImages[NUM_SENSORS];
+	Mat rgbImages[NUM_SENSORS];
+	Mat singleMoA[NUM_SENSORS];
+	Mat heightSingleMap[NUM_SENSORS];
+
+	int nP[NUM_SENSORS];
+	XnPoint3D* points2D [NUM_SENSORS];
+
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		heightSingleMap[i] = Mat::zeros(450,514,CV_32FC1)-2500 ;
+		singleMoA[i] = Mat(450, 514, CV_8UC3);
+		depthImages[i] = Mat(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
+		rgbImages[i] = Mat(XN_VGA_Y_RES, XN_VGA_X_RES, CV_8UC3);
+		points2D[i] = new XnPoint3D[307200];
+		nP[i] = 0;
+	}
+
+	char* nWindows[NUM_SENSORS];
+	nWindows[0] =  "rgb 0";
+	nWindows[1] =  "rgb 1";
+	nWindows[2] =  "rgb 2";
+
+
+	char* windMoA = "Activity Map";
+	int frames = 0;
+	bool first = true;
+	int waitTime = 1;
+	while (!bShouldStop && frames < 1000)
+	{		
+		printf("\rFram %d", frames);
+
+		if (first)
+		{
+			whiteBack = Mat::Mat(actMapCreator.getResolution(), CV_8UC3);
+			whitBackSingle = Mat::Mat(450,514, CV_8UC3);
+			activityMap = new Mat(actMapCreator.getResolution(), CV_8UC3);
+			activityMap_Back = new Mat(actMapCreator.getResolution(), CV_8UC3);
+			Utils::initMat3u(whiteBack, 255);
+			Utils::initMat3u(whitBackSingle, 255);
+			first = false;
+		}
+
+		for (int i = 0; i < NUM_SENSORS; i++)
+			kinects[i].waitAndUpdate();
+		
+		for (int i = 0; i < NUM_SENSORS;  i++)
+		{
+			depthMaps[i] = kinects[i].getDepthMap();
+			rgbMaps[i] = kinects[i].getRGBMap();
+			//new part
+			kinects[i].getDepthImage(depthImages[i]);
+			kinects[i].getRGBImage(rgbImages[i]);
+			nP[i] = 0;
+			heightSingleMap[i] = Mat::zeros(450,514,CV_32FC1)-2500 ;
+			whitBackSingle.copyTo(singleMoA[i]);
+		}
+	
+		whiteBack.copyTo(*activityMap);
+		//background.copyTo(*activityMap_Back);
+		heightMap = Mat::zeros(actMapCreator.getResolution(), CV_32FC1)- 2500;
+		for (int i = 0; i < NUM_SENSORS; i++)
+		{
+
+			//Get all points from camera and project them into the 3D
+			buildListPoints(points2D[i], nP[i], depthMaps[i]);
+
+			//Project the 3D points (not tilted) into the MoA -- same size bin
+			XnPoint3D* points3D = new XnPoint3D[nP[i]];
+			kinects[i].arrayBackProject(points2D[i], points3D, nP[i]);
+			kinects[i].tiltCorrection(points3D, nP[i]);
+
+			XnPoint3D* p2dNew = new XnPoint3D[nP[i]];
+			XnPoint3D* p3dNew = new XnPoint3D[nP[i]];
+			int nPNew = 0;
+
+			filterPoints(points2D[i], points3D, nP[i], p2dNew, p3dNew, nPNew);
+			buildSinglePlanView(singleMoA[i], p3dNew, nP[i], p2dNew, rgbMaps[i], heightSingleMap[i]);
+
+			//transoform into the Reference CS and project into the MoA
+			kinects[i].arrayBackProject(p2dNew, p3dNew, nPNew);
+			kinects[i].transformArray(p3dNew, nPNew);
+			
+			updateActivityMapColor(*activityMap, p3dNew, nP[i], p2dNew, rgbMaps[i], heightMap);
+			//updateActivityMap(*activityMap, *activityMap_Back, &actMapCreator, points3D, nP[i], points2D[i]);
+
+			delete [] points3D;
+			delete [] p2dNew;
+			delete [] p3dNew;
+		}
+		
+		//actMapCreator.createActivityMap(kinects, depthMaps, rgbMaps, trans, background, frames, MAX_RANGE, totalSubIntervalsMOA, MODEL_MAX_HEIGHT, MODEL_MIN_HEIGHT); 
+		
+		//imshow(windMoA, background);
+		imshow(windMoA, *activityMap);
+
+		if (debug >= DEBUG_NONE)
+		{
+			imshow(nWindows[0], rgbImages[0]);
+			imshow(nWindows[1], rgbImages[1]);
+			imshow(nWindows[2], rgbImages[2]);
+
+			imshow("MoA 0", singleMoA[0]);
+			imshow("MoA 1", singleMoA[1]);
+			imshow("MoA 2", singleMoA[2]);
+
+		}
+
+		int c = waitKey(waitTime);
+		
+		switch (c)
+		{
+		case 115: //s (screen capture)
+			{
+					cout << "sdfa" << endl;
+
+				//Register the similarity matrix
+			}
+		case 27: //esc
+			{
+				bShouldStop = true;
+				break;
+			}
+
+		case 99: //c
+			{
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\rgb0.jpg", rgbImages[0]);
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\rgb1.jpg", rgbImages[1]);
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\rgb2.jpg", rgbImages[2]);
+
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\moa0.jpg", singleMoA[0]);
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\moa1.jpg", singleMoA[1]);
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\moa2.jpg", singleMoA[2]);
+
+				imwrite("c:\\Dropbox\\PhD\\Individual Studies\\PhD\\Thesis\\Chapter3\\imgs\\Calibration\\moaFull.jpg", *activityMap);
+				break;
+			}
+		case 116: //t
+			{
+				break;		
+			}
+		case 100: //d
+			{
+				deleteBG = !deleteBG;
+				break;
+			}
+		case 13: //enter
+			{
+				waitTime = !waitTime;				
+				break;
+			}
+		}
+		frames++;
+	}
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		delete []points2D[i];
+	}
+
+	delete activityMap;
+	delete activityMap_Back;
+
+	for (int i = 0; i < NUM_SENSORS; i++)
+	{
+		kinects[i].stopDevice();
+  		kinects[i].shutDown();
+	}
+
 }

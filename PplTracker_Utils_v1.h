@@ -1,6 +1,6 @@
 #pragma once
 #include <Utils.h>
-#include <vld.h>
+//#include <vld.h>
 
 #include <tinystr.h>
 #include <tinyxml.h>
